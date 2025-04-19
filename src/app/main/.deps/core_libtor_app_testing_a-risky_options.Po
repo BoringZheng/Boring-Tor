@@ -1,0 +1,6 @@
+src/app/main/core_libtor_app_testing_a-risky_options.o: \
+ src/app/main/risky_options.c /usr/include/stdc-predef.h orconfig.h \
+ src/app/main/risky_options.h
+/usr/include/stdc-predef.h:
+orconfig.h:
+src/app/main/risky_options.h:
