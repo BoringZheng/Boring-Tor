@@ -429,9 +429,15 @@ sendme_circuit_consider_sending(circuit_t *circ, crypt_path_t *layer_hint)
 
   log_info(LD_APP, "Boring check sendme");
   log_info(LD_EXIT, "Boring check sendme");
+  log_info(LD_APP, "Boring deliver window %d, queuing circuit SENDME.",
+    layer_hint ? layer_hint->deliver_window : circ->deliver_window);
+  log_info(LD_EXIT, "Boring deliver window %d, queuing circuit SENDME.",  
+    layer_hint ? layer_hint->deliver_window : circ->deliver_window);
+  log_info(LD_APP, "Boring sendme_inc %d.", sendme_inc);
+  log_info(LD_EXIT, "Boring sendme_inc %d.", sendme_inc);
 
   while ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) <=
-          CIRCWINDOW_START - 0.6 * sendme_inc) {
+          CIRCWINDOW_START - sendme_inc) {
     log_debug(LD_CIRC,"Queuing circuit sendme.");
     log_info(LD_APP, "Boring deliver window %d, queuing circuit SENDME.",
              layer_hint ? layer_hint->deliver_window : circ->deliver_window);
