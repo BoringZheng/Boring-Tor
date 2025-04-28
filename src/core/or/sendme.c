@@ -446,7 +446,7 @@ sendme_circuit_consider_sending(circuit_t *circ, crypt_path_t *layer_hint)
     log_info(LD_APP, "Boring sendme_inc %d.", sendme_inc);
     log_info(LD_EXIT, "Boring sendme_inc %d.", sendme_inc);
 
-    if ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) ==28)
+    if ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) == CIRCWINDOW_START - 28)
     {
       log_info(LD_APP, "Boring sending SENDME cell.");
       log_info(LD_EXIT, "Boring sending SENDME cell.");
