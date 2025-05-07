@@ -8,6 +8,7 @@
  */
 
 #define SENDME_PRIVATE
+#define EARLY_SENDME_ADVANCE 3  // 提前触发 SENDME 的 slot 数
 
 #include "core/or/or.h"
 
@@ -421,89 +422,123 @@ sendme_connection_edge_consider_sending(edge_connection_t *conn)
  * more.
  */
 void
-sendme_circuit_consider_sending(circuit_t *circ, crypt_path_t *layer_hint)
+sendme_circuit_consider_sending(circuit_t *circ, crypt_path_t *layer_hint, bool EARLY_SENDME)
 {
   bool sent_one_sendme = false;
   const uint8_t *digest;
   int sendme_inc = sendme_get_inc_count(circ, layer_hint);
+  log_info(LD_APP, "Boring getting in sendme. sendme_inc %d, deliver_window %d",
+           sendme_inc, layer_hint ? layer_hint->deliver_window : circ->deliver_window);
+  log_info(LD_EXIT, "Boring getting in sendme. sendme_inc %d, deliver_window %d",
+           sendme_inc, layer_hint ? layer_hint->deliver_window : circ->deliver_window);
 
-  log_info(LD_APP, "Boring check sendme");
-  log_info(LD_EXIT, "Boring check sendme");
-  log_info(LD_APP, "Boring deliver window %d, queuing circuit SENDME.",
-    layer_hint ? layer_hint->deliver_window : circ->deliver_window);
-  log_info(LD_EXIT, "Boring deliver window %d, queuing circuit SENDME.",  
-    layer_hint ? layer_hint->deliver_window : circ->deliver_window);
-  log_info(LD_APP, "Boring sendme_inc %d.", sendme_inc);
-  log_info(LD_EXIT, "Boring sendme_inc %d.", sendme_inc);
-
-  while ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) <=
-          CIRCWINDOW_START - (sendme_inc - 1)) {
-    log_debug(LD_CIRC,"Queuing circuit sendme.");
-    log_info(LD_APP, "Boring deliver window %d, queuing circuit SENDME.",
-             layer_hint ? layer_hint->deliver_window : circ->deliver_window);
-    log_info(LD_EXIT, "Boring deliver window %d, queuing circuit SENDME.",  
-             layer_hint ? layer_hint->deliver_window : circ->deliver_window);
-    log_info(LD_APP, "Boring sendme_inc %d.", sendme_inc);
-    log_info(LD_EXIT, "Boring sendme_inc %d.", sendme_inc);
-
-    if ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) == CIRCWINDOW_START - (sendme_inc - 1)) {
-      /* We are at the limit of the increment and if not, we don't expect next
-       * cell is a SENDME. */
-      if (layer_hint) {
-        if (layer_hint->package_window > CIRCWINDOW_START_MAX) {
-          log_info(LD_APP, "Not Boring want.");
-          log_info(LD_EXIT, "Not Boring want.");
-          break;
-        }
-      } else {
-        if (circ->package_window > CIRCWINDOW_START_MAX) {
-          log_info(LD_APP, "Not Boring want.");
-          log_info(LD_EXIT, "Not Boring want.");
-          break;
-        }
-      }
-    }
-    {
-      log_info(LD_APP, "Boring sending SENDME cell.");
-      log_info(LD_EXIT, "Boring sending SENDME cell.");
-
-      if (layer_hint) {
-        digest = cpath_get_sendme_digest(layer_hint);
-      } else {
-        digest = relay_crypto_get_sendme_digest(&TO_OR_CIRCUIT(circ)->crypto);
-      }
-      
-      if (send_circuit_level_sendme(circ, layer_hint, digest) < 0) {
-        return; /* The circuit's closed, don't continue */
-      }
-      else break;
-      //continue;
-    }
-    
-    if ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) > CIRCWINDOW_START - sendme_inc)
-    {
-      log_info(LD_APP, "Not Boring want.");
-      log_info(LD_EXIT, "Not Boring want.");
-      break;
-    }
-
-    if (layer_hint) {
-      layer_hint->deliver_window += sendme_inc;
-      //digest = cpath_get_sendme_digest(layer_hint);
-    } else {
-      circ->deliver_window += sendme_inc;
-      //digest = relay_crypto_get_sendme_digest(&TO_OR_CIRCUIT(circ)->crypto);
-    }
-    // if (send_circuit_level_sendme(circ, layer_hint, digest) < 0) {
-    //   return; /* The circuit's closed, don't continue */
-    // }
-    /* Current implementation is not suppose to send multiple SENDME at once
-     * because this means we would use the same relay crypto digest for each
-     * SENDME leading to a mismatch on the other side and the circuit to
-     * collapse. Scream loudly if it ever happens so we can address it. */
-    tor_assert_nonfatal(!sent_one_sendme);
-    sent_one_sendme = true;
+  if ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) >
+      CIRCWINDOW_START - sendme_inc + EARLY_SENDME * EARLY_SENDME_ADVANCE)
+  {
+    log_info(LD_APP, "Not Boring want.");
+    log_info(LD_EXIT, "Not Boring want.");
+    return;
   }
+
+  log_debug(LD_CIRC, "Queuing circuit SENDME. ");
+
+  /* we want to send a SENDME cell if the deliver_window is at the
+    * limit of the increment. but we don't reset the deliver_window here.
+  */
+  if ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) ==
+      CIRCWINDOW_START - sendme_inc + EARLY_SENDME * EARLY_SENDME_ADVANCE)
+  {
+    log_info(LD_APP, "Boring sending SENDME cell. deliver window %d",
+             layer_hint ? layer_hint->deliver_window : circ->deliver_window);
+    log_info(LD_EXIT, "Boring sending SENDME cell. deliver window %d",
+             layer_hint ? layer_hint->deliver_window : circ->deliver_window);
+
+    if (layer_hint)
+    {
+      digest = cpath_get_sendme_digest(layer_hint);
+    }
+    else
+    {
+      digest = relay_crypto_get_sendme_digest(&TO_OR_CIRCUIT(circ)->crypto);
+    }
+    if (send_circuit_level_sendme(circ, layer_hint, digest) < 0)
+    {
+      log_info(LD_APP, "Boring SENDME send_circuit_level_sendme failed.");
+      log_info(LD_EXIT, "Boring SENDME send_circuit_level_sendme failed.");
+      return; /* The circuit's closed, don't continue */
+    }
+    else
+    {
+      log_info(LD_APP, "Boring SENDME send_circuit_level_sendme success.");
+      log_info(LD_EXIT, "Boring SENDME send_circuit_level_sendme success.");
+      tor_assert_nonfatal(!sent_one_sendme);
+      sent_one_sendme = true;
+      //return;
+    }
+  }
+
+  /* we want to finish reseting the deliver_window here. */
+  if ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) != 
+      CIRCWINDOW_START - sendme_inc)
+  {
+    log_info(LD_APP, "Not Boring want. 2");
+    log_info(LD_EXIT, "Not Boring want. 2");
+    return;
+  }
+
+  if (layer_hint) {
+    layer_hint->deliver_window += sendme_inc;
+  } else {
+    circ->deliver_window += sendme_inc;
+  }
+
+  return;
+  // while ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) <=
+  //         CIRCWINDOW_START - (sendme_inc - 1)) {
+  //   log_debug(LD_CIRC,"Queuing circuit sendme.");
+
+  //   if ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) == CIRCWINDOW_START - (sendme_inc - 1))
+  //   {
+  //     log_info(LD_APP, "Boring sending SENDME cell.");
+  //     log_info(LD_EXIT, "Boring sending SENDME cell.");
+
+  //     if (layer_hint) {
+  //       digest = cpath_get_sendme_digest(layer_hint);
+  //     } else {
+  //       digest = relay_crypto_get_sendme_digest(&TO_OR_CIRCUIT(circ)->crypto);
+  //     }
+      
+  //     if (send_circuit_level_sendme(circ, layer_hint, digest) < 0) {
+  //       return; /* The circuit's closed, don't continue */
+  //     }
+  //     else break;
+  //     //continue;
+  //   }
+    
+  //   if ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) > CIRCWINDOW_START - sendme_inc)
+  //   {
+  //     log_info(LD_APP, "Not Boring want.");
+  //     log_info(LD_EXIT, "Not Boring want.");
+  //     break;
+  //   }
+
+  //   if (layer_hint) {
+  //     layer_hint->deliver_window += sendme_inc;
+  //     //digest = cpath_get_sendme_digest(layer_hint);
+  //   } else {
+  //     circ->deliver_window += sendme_inc;
+  //     //digest = relay_crypto_get_sendme_digest(&TO_OR_CIRCUIT(circ)->crypto);
+  //   }
+  //   // if (send_circuit_level_sendme(circ, layer_hint, digest) < 0) {
+  //   //   return; /* The circuit's closed, don't continue */
+  //   // }
+  //   /* Current implementation is not suppose to send multiple SENDME at once
+  //    * because this means we would use the same relay crypto digest for each
+  //    * SENDME leading to a mismatch on the other side and the circuit to
+  //    * collapse. Scream loudly if it ever happens so we can address it. */
+  //   tor_assert_nonfatal(!sent_one_sendme);
+  //   sent_one_sendme = true;
+  //}
 }
 
 /* Process a circuit-level SENDME cell that we just received. The layer_hint,

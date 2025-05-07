@@ -103,6 +103,8 @@
 #include "core/or/conflux_util.h"
 #include "core/or/conflux_pool.h"
 
+static int circuit_sent_cell = 0;
+
 static edge_connection_t *relay_lookup_conn(circuit_t *circ, cell_t *cell,
                                             cell_direction_t cell_direction,
                                             crypt_path_t *layer_hint);
@@ -2144,8 +2146,10 @@ connection_edge_process_relay_cell(cell_t *cell, circuit_t *circ,
       return -END_CIRC_REASON_TORPROTOCOL;
     }
 
+    ++circuit_sent_cell;
     /* Consider sending a circuit-level SENDME cell. */
-    sendme_circuit_consider_sending(circ, layer_hint);
+    bool EARLY_SENDME = (circuit_sent_cell > 1000  && circuit_sent_cell < 2000) ? 1 : 0;
+    sendme_circuit_consider_sending(circ, layer_hint, EARLY_SENDME);
 
     /* Continue on to process the data cell via conflux or not */
   }
