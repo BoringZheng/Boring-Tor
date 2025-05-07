@@ -437,7 +437,7 @@ sendme_circuit_consider_sending(circuit_t *circ, crypt_path_t *layer_hint)
   log_info(LD_EXIT, "Boring sendme_inc %d.", sendme_inc);
 
   while ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) <=
-          CIRCWINDOW_START - 28) {
+          CIRCWINDOW_START - (sendme_inc - 1)) {
     log_debug(LD_CIRC,"Queuing circuit sendme.");
     log_info(LD_APP, "Boring deliver window %d, queuing circuit SENDME.",
              layer_hint ? layer_hint->deliver_window : circ->deliver_window);
@@ -446,29 +446,53 @@ sendme_circuit_consider_sending(circuit_t *circ, crypt_path_t *layer_hint)
     log_info(LD_APP, "Boring sendme_inc %d.", sendme_inc);
     log_info(LD_EXIT, "Boring sendme_inc %d.", sendme_inc);
 
-    if ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) == CIRCWINDOW_START - 28)
+    if ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) == CIRCWINDOW_START - (sendme_inc - 1)) {
+      /* We are at the limit of the increment and if not, we don't expect next
+       * cell is a SENDME. */
+      if (layer_hint) {
+        if (layer_hint->package_window > CIRCWINDOW_START_MAX) {
+          log_info(LD_APP, "Not Boring want.");
+          log_info(LD_EXIT, "Not Boring want.");
+          break;
+        }
+      } else {
+        if (circ->package_window > CIRCWINDOW_START_MAX) {
+          log_info(LD_APP, "Not Boring want.");
+          log_info(LD_EXIT, "Not Boring want.");
+          break;
+        }
+      }
+    }
     {
       log_info(LD_APP, "Boring sending SENDME cell.");
       log_info(LD_EXIT, "Boring sending SENDME cell.");
+
+      if (layer_hint) {
+        digest = cpath_get_sendme_digest(layer_hint);
+      } else {
+        digest = relay_crypto_get_sendme_digest(&TO_OR_CIRCUIT(circ)->crypto);
+      }
+      
       if (send_circuit_level_sendme(circ, layer_hint, digest) < 0) {
         return; /* The circuit's closed, don't continue */
       }
-      continue;
+      else break;
+      //continue;
     }
     
     if ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) > CIRCWINDOW_START - sendme_inc)
     {
       log_info(LD_APP, "Not Boring want.");
       log_info(LD_EXIT, "Not Boring want.");
-      continue;
+      break;
     }
 
     if (layer_hint) {
       layer_hint->deliver_window += sendme_inc;
-      digest = cpath_get_sendme_digest(layer_hint);
+      //digest = cpath_get_sendme_digest(layer_hint);
     } else {
       circ->deliver_window += sendme_inc;
-      digest = relay_crypto_get_sendme_digest(&TO_OR_CIRCUIT(circ)->crypto);
+      //digest = relay_crypto_get_sendme_digest(&TO_OR_CIRCUIT(circ)->crypto);
     }
     // if (send_circuit_level_sendme(circ, layer_hint, digest) < 0) {
     //   return; /* The circuit's closed, don't continue */
