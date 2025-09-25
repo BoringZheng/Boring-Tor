@@ -1,0 +1,11 @@
+src/lib/llharden/winprocess_sys.o: src/lib/llharden/winprocess_sys.c \
+ /usr/include/stdc-predef.h orconfig.h src/lib/subsys/subsys.h \
+ /usr/lib/gcc/x86_64-linux-gnu/11/include/stdbool.h \
+ src/lib/llharden/winprocess_sys.h \
+ /usr/lib/gcc/x86_64-linux-gnu/11/include/stddef.h
+/usr/include/stdc-predef.h:
+orconfig.h:
+src/lib/subsys/subsys.h:
+/usr/lib/gcc/x86_64-linux-gnu/11/include/stdbool.h:
+src/lib/llharden/winprocess_sys.h:
+/usr/lib/gcc/x86_64-linux-gnu/11/include/stddef.h:

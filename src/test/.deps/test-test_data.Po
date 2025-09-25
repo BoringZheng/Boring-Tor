@@ -1,0 +1,7 @@
+src/test/test-test_data.o: src/test/test_data.c \
+ /usr/include/stdc-predef.h src/test/test.h src/ext/tinytest.h \
+ src/ext/tinytest_macros.h
+/usr/include/stdc-predef.h:
+src/test/test.h:
+src/ext/tinytest.h:
+src/ext/tinytest_macros.h:

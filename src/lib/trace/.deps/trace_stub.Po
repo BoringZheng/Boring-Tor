@@ -1,0 +1,8 @@
+src/lib/trace/trace_stub.o: src/lib/trace/trace_stub.c \
+ /usr/include/stdc-predef.h src/lib/subsys/subsys.h \
+ /usr/lib/gcc/x86_64-linux-gnu/11/include/stdbool.h \
+ src/lib/trace/trace_sys.h
+/usr/include/stdc-predef.h:
+src/lib/subsys/subsys.h:
+/usr/lib/gcc/x86_64-linux-gnu/11/include/stdbool.h:
+src/lib/trace/trace_sys.h:
