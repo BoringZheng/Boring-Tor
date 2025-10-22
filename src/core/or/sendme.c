@@ -27,15 +27,40 @@
 #include "lib/ctime/di_ops.h"
 #include "trunnel/sendme_cell.h"
 
+/* === BORING TEST: force v0 SENDME and early-send === */
+#ifndef BORING_TEST_SENDME
+#define BORING_TEST_SENDME 1
+#endif
+
+#ifndef SENDME_EARLY_CELLS
+#define SENDME_EARLY_CELLS 2
+#endif
+
+/* === BORING TEST END === */
+
 /* Return the minimum version given by the consensus (if any) that should be
  * used when emitting a SENDME cell. */
 STATIC int
 get_emit_min_version(void)
 {
-  return networkstatus_get_param(NULL, "sendme_emit_min_version",
-                                 SENDME_EMIT_MIN_VERSION_DEFAULT,
-                                 SENDME_EMIT_MIN_VERSION_MIN,
-                                 SENDME_EMIT_MIN_VERSION_MAX);
+
+  /* === BORING TEST === */
+
+  // return networkstatus_get_param(NULL, "sendme_emit_min_version",
+  //                                SENDME_EMIT_MIN_VERSION_DEFAULT,
+  //                                SENDME_EMIT_MIN_VERSION_MIN,
+  //                                SENDME_EMIT_MIN_VERSION_MAX);
+
+  #if BORING_TEST_SENDME
+    return 0;
+  #else
+    return networkstatus_get_param(NULL, "sendme_emit_min_version",
+                                   SENDME_EMIT_MIN_VERSION_DEFAULT,
+                                   SENDME_EMIT_MIN_VERSION_MIN,
+                                   SENDME_EMIT_MIN_VERSION_MAX);
+  #endif
+
+  /* === BORING TEST === */
 }
 
 /* Return the minimum version given by the consensus (if any) that should be
@@ -43,10 +68,23 @@ get_emit_min_version(void)
 STATIC int
 get_accept_min_version(void)
 {
-  return networkstatus_get_param(NULL, "sendme_accept_min_version",
-                                 SENDME_ACCEPT_MIN_VERSION_DEFAULT,
-                                 SENDME_ACCEPT_MIN_VERSION_MIN,
-                                 SENDME_ACCEPT_MIN_VERSION_MAX);
+  /* === BORING TEST === */
+
+  // return networkstatus_get_param(NULL, "sendme_accept_min_version",
+  //                                SENDME_ACCEPT_MIN_VERSION_DEFAULT,
+  //                                SENDME_ACCEPT_MIN_VERSION_MIN,
+  //                                SENDME_ACCEPT_MIN_VERSION_MAX);
+  
+  #if BORING_TEST_SENDME
+    return 0;
+  #else
+    return networkstatus_get_param(NULL, "sendme_accept_min_version",
+                                   SENDME_ACCEPT_MIN_VERSION_DEFAULT,
+                                   SENDME_ACCEPT_MIN_VERSION_MIN,
+                                   SENDME_ACCEPT_MIN_VERSION_MAX);
+  #endif
+
+  /* === BORING TEST === */
 }
 
 /* Pop the first cell digset on the given circuit from the SENDME last digests
@@ -273,10 +311,23 @@ send_circuit_level_sendme(circuit_t *circ, crypt_path_t *layer_hint,
   uint8_t payload[RELAY_PAYLOAD_SIZE];
   ssize_t payload_len;
 
+  log_notice(LD_CIRC,
+             "Boring Sending circuit-level SENDME on circuit ");
+  
   tor_assert(circ);
-  tor_assert(cell_digest);
+
+  /* === BORING TEST === */
+
+  // tor_assert(cell_digest);
+
+  // emit_version = get_emit_min_version();
 
   emit_version = get_emit_min_version();
+  if (emit_version == 0x011)
+  {
+    tor_assert(cell_digest);
+  }
+  /* === BORING TEST === */
   switch (emit_version) {
   case 0x01:
     payload_len = build_cell_payload_v1(cell_digest, payload);
@@ -430,25 +481,45 @@ sendme_circuit_consider_sending(circuit_t *circ, crypt_path_t *layer_hint)
              layer_hint ? layer_hint->deliver_window : circ->deliver_window,
              sendme_inc);
 
+  /* === BORING TEST === */
+
   while ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) <=
-          CIRCWINDOW_START - sendme_inc) {
-    log_debug(LD_CIRC,"Queuing circuit sendme.");
-    if (layer_hint) {
-      layer_hint->deliver_window += sendme_inc;
-      digest = cpath_get_sendme_digest(layer_hint);
-    } else {
-      circ->deliver_window += sendme_inc;
-      digest = relay_crypto_get_sendme_digest(&TO_OR_CIRCUIT(circ)->crypto);
+          CIRCWINDOW_START - sendme_inc + SENDME_EARLY_CELLS) {
+          //CIRCWINDOW_START - sendme_inc) {
+    
+    if ((layer_hint? layer_hint->deliver_window : circ->deliver_window) == 
+        CIRCWINDOW_START - sendme_inc) {
+
+      log_debug(LD_CIRC,"Queuing circuit sendme.");
+      if (layer_hint) {
+        layer_hint->deliver_window += sendme_inc;
+        digest = cpath_get_sendme_digest(layer_hint);
+      } else {
+        circ->deliver_window += sendme_inc;
+        digest = relay_crypto_get_sendme_digest(&TO_OR_CIRCUIT(circ)->crypto);
+      }
     }
-    if (send_circuit_level_sendme(circ, layer_hint, digest) < 0) {
-      return; /* The circuit's closed, don't continue */
+    if ((layer_hint? layer_hint->deliver_window : circ->deliver_window) == 
+        CIRCWINDOW_START - sendme_inc + SENDME_EARLY_CELLS) {
+
+      if (send_circuit_level_sendme(circ, layer_hint, digest) < 0) {
+        return; /* The circuit's closed, don't continue */
+      }
+    }
+
+    if ((layer_hint? layer_hint->deliver_window : circ->deliver_window) != 
+        CIRCWINDOW_START - sendme_inc) {  
+      break;
     }
     /* Current implementation is not suppose to send multiple SENDME at once
      * because this means we would use the same relay crypto digest for each
      * SENDME leading to a mismatch on the other side and the circuit to
      * collapse. Scream loudly if it ever happens so we can address it. */
     tor_assert_nonfatal(!sent_one_sendme);
-    sent_one_sendme = true;
+    if ((layer_hint? layer_hint->deliver_window : circ->deliver_window) == 
+        CIRCWINDOW_START - sendme_inc) {  
+      sent_one_sendme = true;
+    }
   }
 }
 

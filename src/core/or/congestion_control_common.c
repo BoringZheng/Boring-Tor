@@ -958,6 +958,17 @@ congestion_control_update_circuit_bdp(congestion_control_t *cc,
     }
   }
 
+  /* === BORING TEST ===*/
+  log_notice(LD_CIRC,
+             "CC: Circuit BDP update: cwnd=%"PRIu64", min_RTT=%"PRIu64
+             " usec, ewma_RTT=%"PRIu64" usec, bdp=%"PRIu64,
+           cc->cwnd,
+           cc->min_rtt_usec,
+           cc->ewma_rtt_usec,
+           cc->bdp);
+  /* === BORING TEST ===*/
+
+
   /* We updated BDP this round if either we had a blocked channel, or
    * the curr_rtt_usec was not 0. */
   bool ret = (blocked_on_chan || curr_rtt_usec != 0);

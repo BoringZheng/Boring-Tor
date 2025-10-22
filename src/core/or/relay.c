@@ -3435,7 +3435,7 @@ append_cell_to_circuit_queue(circuit_t *circ, channel_t *chan,
     max_queue_size = max_circuit_cell_queue_size;
     stream_list = TO_OR_CIRCUIT(circ)->n_streams;
   }
-
+  
   if (PREDICT_UNLIKELY(queue->n >= max_queue_size)) {
     /* This DoS defense only applies at the Guard as in the p_chan is likely
      * a client IP attacking the network. */
@@ -3450,8 +3450,10 @@ append_cell_to_circuit_queue(circuit_t *circ, channel_t *chan,
            (exitward) ? "Outbound" : "Inbound", queue->n,
            max_queue_size);
     stats_n_circ_max_cell_reached++;
+
     return -1;
   }
+
 
   /* Very important that we copy to the circuit queue because all calls to
    * this function use the stack for the cell memory. */
