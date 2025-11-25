@@ -29,6 +29,41 @@
 #include "lib/ctime/di_ops.h"
 #include "trunnel/sendme_cell.h"
 
+/* == BORING TEST == */
+typedef struct delayed_sendme_t
+{
+  circuit_t *circ;
+  crypt_path_t *layer_hint;
+  size_t tag_len;
+  uint8_t tag[64];
+} delayed_sendme_t;
+
+static smartlist_t *delayed_sendme_queue = NULL;
+
+static int sendme_delay_enabled(void)
+{
+  static int initialized = 0;
+  static int enabled = 0;
+
+  if (!initialized)
+  {
+    const char *v = getenv("TOR_TEST_SENDME_DELAY");
+    if (v && atoi(v) != 0)
+    {
+      enabled = 1;
+      log_notice(LD_GENERAL, "SENDME delay enabled for testing.");
+    }
+    initialized = 1;
+  }
+  return enabled;
+}
+
+#define SENDME_DELAY_BATCH_SIZE 7
+
+#define SENDME_DELAY_SLEEP_MSEC 0
+/* == BORING TEST == */
+
+
 /**
  * Return true iff tag_len is some length we recognize.
  */
@@ -444,6 +479,13 @@ sendme_circuit_consider_sending(circuit_t *circ, crypt_path_t *layer_hint)
   size_t tag_len = 0;
   int sendme_inc = sendme_get_inc_count(circ, layer_hint);
 
+  /* == BORING TEST == */
+  int delay_mode = (sendme_delay_enabled() &&
+                    CIRCUIT_IS_ORIGIN(circ) &&
+                    layer_hint != NULL);
+
+  /* == BORING TEST == */
+
   while ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) <=
           CIRCWINDOW_START - sendme_inc) {
     log_debug(LD_CIRC,"Queuing circuit sendme.");
@@ -455,16 +497,63 @@ sendme_circuit_consider_sending(circuit_t *circ, crypt_path_t *layer_hint)
       tag = relay_crypto_get_sendme_tag(&TO_OR_CIRCUIT(circ)->crypto,
                                         &tag_len);
     }
-    if (send_circuit_level_sendme(circ, layer_hint, tag, tag_len) < 0) {
-      return; /* The circuit's closed, don't continue */
+
+    /* == BORING TEST == */
+    if (delay_mode)
+    {
+      if (!delayed_sendme_queue)
+      {
+        delayed_sendme_queue = smartlist_new();
+      }
+
+      delayed_sendme_t *e = tor_malloc_zero(sizeof(*e));
+      e->circ = circ;
+      e->layer_hint = layer_hint;
+      e->tag_len = tag_len;
+      memcpy(e->tag, tag, tag_len);
+
+      smartlist_add(delayed_sendme_queue, e);
+
+      log_notice(LD_GENERAL, 
+                 "Delaying SENDME for testing. Queue size: %zu",
+                 smartlist_len(delayed_sendme_queue));
     }
+    else
+    {
+      if (send_circuit_level_sendme(circ, layer_hint, tag, tag_len) < 0)
+      {
+        return;
+      }
+      tor_assert_nonfatal(!sent_one_sendme);
+      sent_one_sendme = true;
+    }
+
+    // if (send_circuit_level_sendme(circ, layer_hint, tag, tag_len) < 0) {
+    //   return; /* The circuit's closed, don't continue */
+    // }
     /* Current implementation is not suppose to send multiple SENDME at once
      * because this means we would use the same relay crypto digest for each
      * SENDME leading to a mismatch on the other side and the circuit to
      * collapse. Scream loudly if it ever happens so we can address it. */
-    tor_assert_nonfatal(!sent_one_sendme);
-    sent_one_sendme = true;
+    // tor_assert_nonfatal(!sent_one_sendme);
+    // sent_one_sendme = true;
   }
+
+  if (delay_mode && delayed_sendme_queue &&
+      smartlist_len(delayed_sendme_queue) >= SENDME_DELAY_BATCH_SIZE)
+  {
+    log_notice(LD_GENERAL, "Sending a delayed SENDME");
+    delayed_sendme_t *e = smartlist_get(delayed_sendme_queue, 0);
+    smartlist_del(delayed_sendme_queue, 0);
+
+    if (e->circ == circ && e->layer_hint == layer_hint)
+    {
+      send_circuit_level_sendme(e->circ, e->layer_hint, e->tag, e->tag_len);
+    }
+
+    tor_free(e);
+  }
+  /* == BORING TEST == */
 }
 
 /* Process a circuit-level SENDME cell that we just received. The layer_hint,
