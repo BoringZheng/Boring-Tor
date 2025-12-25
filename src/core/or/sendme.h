@@ -13,6 +13,9 @@
 #include "core/or/crypt_path_st.h"
 #include "core/or/circuit_st.h"
 
+/* == BORING TEST == */
+void sendme_delay_activate(circuit_t *circ);
+
 /* Sending SENDME cell. */
 void sendme_connection_edge_consider_sending(edge_connection_t *edge_conn);
 void sendme_circuit_consider_sending(circuit_t *circ,

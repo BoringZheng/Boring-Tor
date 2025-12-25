@@ -1713,6 +1713,10 @@ handle_relay_msg(const relay_msg_t *msg, circuit_t *circ,
       /* Total all valid application bytes delivered */
       if (CIRCUIT_IS_ORIGIN(circ) && msg->length > 0) {
         circuit_read_valid_data(TO_ORIGIN_CIRCUIT(circ), msg->length);
+
+        /* == BORING TEST == */
+        sendme_delay_activate(circ);
+        /* == BORING TEST == */
       }
 
       /* For onion service connection, update the metrics. */

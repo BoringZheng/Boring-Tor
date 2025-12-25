@@ -29,6 +29,33 @@
 #include "lib/ctime/di_ops.h"
 #include "trunnel/sendme_cell.h"
 
+/* == BORING TEST ==  */
+#ifndef DELAY_SENDME
+#define DELAY_SENDME 9
+#endif
+
+int tor_delay_sendme_active = 0;
+
+static circuit_t *delay_sendme_circ = NULL;
+static int delay_sendme_pending = 0;
+static crypt_path_t *delay_sendme_layer = NULL;
+
+void sendme_delay_activate(circuit_t *circ)
+{
+  tor_assert(circ);
+  if (!tor_delay_sendme_active)
+  {
+    tor_delay_sendme_active = 1;
+    delay_sendme_circ = circ;
+    delay_sendme_pending = 0;
+    delay_sendme_layer = NULL;
+    log_notice(LD_CIRC, "[DELAY SENDME] activated on circ %u",
+               CIRCUIT_IS_ORIGIN(circ) ? TO_ORIGIN_CIRCUIT(circ)->global_identifier :
+                                         (unsigned)circ->n_circ_id);
+  }
+}
+/* == BORING TEST == */
+
 /**
  * Return true iff tag_len is some length we recognize.
  */
@@ -318,7 +345,63 @@ send_circuit_level_sendme(circuit_t *circ, crypt_path_t *layer_hint,
   tor_assert(circ);
   tor_assert(cell_tag);
 
-  emit_version = get_emit_min_version();
+  /* == BORING TEST == */
+  //emit_version = get_emit_min_version();
+  emit_version = 0x00;
+  if (PREDICT_LIKELY(tor_delay_sendme_active))
+  {
+    if (delay_sendme_circ == NULL)
+    {
+      delay_sendme_circ = circ;
+      delay_sendme_pending = 0;
+      delay_sendme_layer = layer_hint;
+    }
+
+    if (circ != delay_sendme_circ)
+    {
+      int to_flush = delay_sendme_pending;
+      circuit_t *old = delay_sendme_circ;
+      crypt_path_t *old_layer = delay_sendme_layer;
+
+      delay_sendme_circ = circ;
+      delay_sendme_pending = 0;
+      delay_sendme_layer = layer_hint;
+
+      if (to_flush > 0)
+      {
+        log_notice(LD_CIRC,
+                   "[DELAY_SENDME] switched detected; flushing %d pending SENDMEs on old circ",
+                   to_flush);
+        for (int i = 0; i < to_flush; ++i)
+        {
+          if (relay_send_command_from_edge(0, old, RELAY_COMMAND_SENDME,
+                                       (char *) payload, 0,
+                                       old_layer) < 0) {
+            log_warn(LD_CIRC,
+                     "[DELAY_SENDME] flush failed; old circuit likely closed.");
+            break;
+          }
+        }
+      }
+      else
+      {
+        log_notice(LD_CIRC,
+                   "[DELAY_SENDME] switched detected; nothing to flush");
+      }
+    }
+
+    if (delay_sendme_pending < (int)DELAY_SENDME)
+    {
+      delay_sendme_pending++;
+      delay_sendme_layer = layer_hint;
+      log_debug(LD_CIRC,
+                "[DELAY_SENDME] holding SENDME (%d/%d)",
+                delay_sendme_pending, (int)DELAY_SENDME);
+      return 0;
+    }
+  }
+  /* == BORING TEST == */
+
   switch (emit_version) {
   case 0x01:
     payload_len = build_cell_payload_v1(cell_tag, tag_len, payload);
