@@ -31,7 +31,7 @@
 
 /* == BORING TEST ==  */
 #ifndef DELAY_SENDME
-#define DELAY_SENDME 9
+#define DELAY_SENDME 10
 #endif
 
 int tor_delay_sendme_active = 0;
@@ -49,9 +49,8 @@ void sendme_delay_activate(circuit_t *circ)
     delay_sendme_circ = circ;
     delay_sendme_pending = 0;
     delay_sendme_layer = NULL;
-    log_notice(LD_CIRC, "[DELAY SENDME] activated on circ %u",
-               CIRCUIT_IS_ORIGIN(circ) ? TO_ORIGIN_CIRCUIT(circ)->global_identifier :
-                                         (unsigned)circ->n_circ_id);
+    log_notice(LD_CIRC, "[DELAY SENDME] activated on n_circ_id = %u",
+               (unsigned)circ->n_circ_id);
   }
 }
 /* == BORING TEST == */
@@ -347,6 +346,9 @@ send_circuit_level_sendme(circuit_t *circ, crypt_path_t *layer_hint,
 
   /* == BORING TEST == */
   //emit_version = get_emit_min_version();
+  log_notice(LD_CIRC,
+             "[DELAY SENDME] n_circ_id = %u, delay_sendme_pending = %d",
+             (unsigned)circ->n_circ_id, delay_sendme_pending);
   emit_version = 0x00;
   if (PREDICT_LIKELY(tor_delay_sendme_active))
   {
@@ -398,6 +400,16 @@ send_circuit_level_sendme(circuit_t *circ, crypt_path_t *layer_hint,
                 "[DELAY_SENDME] holding SENDME (%d/%d)",
                 delay_sendme_pending, (int)DELAY_SENDME);
       return 0;
+    }
+    else
+    {
+      while (delay_sendme_pending > 0)
+      {
+        relay_send_command_from_edge(0, circ, RELAY_COMMAND_SENDME,
+                                       (char *) payload, 0,
+                                       delay_sendme_layer);
+        delay_sendme_pending--;
+      }
     }
   }
   /* == BORING TEST == */
