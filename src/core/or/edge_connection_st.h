@@ -119,6 +119,10 @@ struct edge_connection_t {
    */
   uint32_t ewma_rate_last_sent;
 
+  /* BORING TEST */
+  uint64_t flowctl_epoch_last_sent;
+  /* BORING TEST */
+
   /**
    * The following fields are used to count the total bytes sent on this
    * stream, and compare them to the number of XON and XOFFs received, so

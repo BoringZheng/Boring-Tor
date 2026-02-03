@@ -30,6 +30,13 @@
 #include "app/config/config.h"
 #include "core/or/conflux_util.h"
 
+/* BORING TEST */
+#include <stdio.h>
+#include <sys/stat.h>
+#include <string.h>
+#include <ctype.h>
+/* BORING TEST */
+
 /** Cache consensus parameters */
 static uint32_t xoff_client;
 static uint32_t xoff_exit;
@@ -43,6 +50,227 @@ uint64_t cc_stats_flow_num_xoff_sent;
 uint64_t cc_stats_flow_num_xon_sent;
 double cc_stats_flow_xoff_outbuf_ma = 0;
 double cc_stats_flow_xon_outbuf_ma = 0;
+
+/* BORING TEST */
+
+/* ===================== Client-only FlowCtl knobs ===================== */
+/* A tiny runtime knob system (file-based) to rewrite XON kbps on CLIENT.
+ * Exit side does not change; it already consumes XON kbps and adjusts bucket.
+ */
+
+typedef enum {
+  FLOWCTL_MODE_OFF = 0,
+  FLOWCTL_MODE_FIXED,
+  FLOWCTL_MODE_CAP,
+  FLOWCTL_MODE_SCALE,
+  FLOWCTL_MODE_SQUARE,
+  FLOWCTL_MODE_XOFF,
+} flowctl_mode_t;
+
+typedef struct flowctl_cfg_t {
+  flowctl_mode_t mode;
+
+  /* fixed */
+  uint32_t target_kbps;
+
+  /* cap */
+  uint32_t cap_kbps;
+
+  /* scale: permille, 1000 = 1.0x */
+  uint32_t scale_permille;
+
+  /* square wave */
+  uint32_t high_kbps;
+  uint32_t low_kbps;
+  uint32_t period_ms;
+
+  /* logging */
+  int log_on;
+} flowctl_cfg_t;
+
+static flowctl_cfg_t flowctl_cfg = {
+  .mode = FLOWCTL_MODE_OFF,
+  .target_kbps = 0,
+  .cap_kbps = 0,
+  .scale_permille = 1000,
+  .high_kbps = 0,
+  .low_kbps = 0,
+  .period_ms = 2000,
+  .log_on = 1,
+};
+
+static uint64_t flowctl_epoch = 1;           /* bump on cfg reload */
+static time_t flowctl_cfg_mtime = 0;
+
+static inline const char *
+flowctl_cfg_path(void)
+{
+  const char *p = getenv("TOR_FLOWCTL_FILE");
+  return (p && p[0]) ? p : "/tmp/tor-flowctl.conf";
+}
+
+static inline void
+flowctl_strstrip_inplace(char *s)
+{
+  if (!s) return;
+  /* lstrip */
+  while (*s && isspace((unsigned char)*s)) {
+    memmove(s, s+1, strlen(s));
+  }
+  /* rstrip */
+  size_t n = strlen(s);
+  while (n > 0 && isspace((unsigned char)s[n-1])) {
+    s[n-1] = '\0';
+    n--;
+  }
+}
+
+static flowctl_mode_t
+flowctl_parse_mode(const char *v)
+{
+  if (!v) return FLOWCTL_MODE_OFF;
+  if (!strcasecmp(v, "off")) return FLOWCTL_MODE_OFF;
+  if (!strcasecmp(v, "fixed")) return FLOWCTL_MODE_FIXED;
+  if (!strcasecmp(v, "cap")) return FLOWCTL_MODE_CAP;
+  if (!strcasecmp(v, "scale")) return FLOWCTL_MODE_SCALE;
+  if (!strcasecmp(v, "square")) return FLOWCTL_MODE_SQUARE;
+  if (!strcasecmp(v, "xoff")) return FLOWCTL_MODE_XOFF;
+  return FLOWCTL_MODE_OFF;
+}
+
+/* returns 1 if reloaded and epoch bumped */
+static int
+flowctl_maybe_reload_cfg(void)
+{
+  const char *path = flowctl_cfg_path();
+  struct stat st;
+
+  if (stat(path, &st) != 0) {
+    /* no file => keep current cfg */
+    return 0;
+  }
+  if (st.st_mtime == flowctl_cfg_mtime) {
+    return 0;
+  }
+
+  FILE *fp = fopen(path, "r");
+  if (!fp) {
+    return 0;
+  }
+
+  flowctl_cfg_t newcfg = flowctl_cfg; /* start from current */
+  char line[256];
+
+  while (fgets(line, sizeof(line), fp)) {
+    flowctl_strstrip_inplace(line);
+    if (line[0] == '\0' || line[0] == '#')
+      continue;
+
+    char *eq = strchr(line, '=');
+    if (!eq) continue;
+    *eq = '\0';
+    char *k = line;
+    char *v = eq + 1;
+    flowctl_strstrip_inplace(k);
+    flowctl_strstrip_inplace(v);
+
+    if (!strcasecmp(k, "mode")) {
+      newcfg.mode = flowctl_parse_mode(v);
+    } else if (!strcasecmp(k, "target_kbps")) {
+      newcfg.target_kbps = (uint32_t)strtoul(v, NULL, 10);
+    } else if (!strcasecmp(k, "cap_kbps")) {
+      newcfg.cap_kbps = (uint32_t)strtoul(v, NULL, 10);
+    } else if (!strcasecmp(k, "scale_permille")) {
+      newcfg.scale_permille = (uint32_t)strtoul(v, NULL, 10);
+    } else if (!strcasecmp(k, "high_kbps")) {
+      newcfg.high_kbps = (uint32_t)strtoul(v, NULL, 10);
+    } else if (!strcasecmp(k, "low_kbps")) {
+      newcfg.low_kbps = (uint32_t)strtoul(v, NULL, 10);
+    } else if (!strcasecmp(k, "period_ms")) {
+      newcfg.period_ms = (uint32_t)strtoul(v, NULL, 10);
+      if (newcfg.period_ms == 0) newcfg.period_ms = 2000;
+    } else if (!strcasecmp(k, "log")) {
+      newcfg.log_on = (int)strtol(v, NULL, 10);
+    }
+  }
+
+  fclose(fp);
+
+  flowctl_cfg = newcfg;
+  flowctl_cfg_mtime = st.st_mtime;
+  flowctl_epoch++;
+
+  if (flowctl_cfg.log_on) {
+    log_notice(LD_EDGE,
+      "[flowctl] reload: mode=%d target=%u cap=%u scale=%u high=%u low=%u period_ms=%u epoch=%" PRIu64 " file=%s",
+      (int)flowctl_cfg.mode,
+      flowctl_cfg.target_kbps,
+      flowctl_cfg.cap_kbps,
+      flowctl_cfg.scale_permille,
+      flowctl_cfg.high_kbps,
+      flowctl_cfg.low_kbps,
+      flowctl_cfg.period_ms,
+      (uint64_t)flowctl_epoch,
+      path);
+  }
+
+  return 1;
+}
+
+static inline uint32_t
+flowctl_compute_advertised_kbps(uint32_t measured_kbps)
+{
+  uint32_t adv = measured_kbps;
+
+  switch (flowctl_cfg.mode) {
+    case FLOWCTL_MODE_OFF:
+      return measured_kbps;
+
+    case FLOWCTL_MODE_FIXED:
+      adv = flowctl_cfg.target_kbps;
+      break;
+
+    case FLOWCTL_MODE_CAP:
+      if (flowctl_cfg.cap_kbps > 0)
+        adv = MIN(measured_kbps, flowctl_cfg.cap_kbps);
+      break;
+
+    case FLOWCTL_MODE_SCALE: {
+      uint64_t t = (uint64_t)measured_kbps * (uint64_t)flowctl_cfg.scale_permille;
+      adv = (uint32_t)MIN((uint64_t)INT32_MAX, (t + 500) / 1000); /* rounded */
+      break;
+    }
+
+    case FLOWCTL_MODE_SQUARE: {
+      uint64_t now_us = monotime_absolute_usec();
+      uint64_t phase = (flowctl_cfg.period_ms ? (uint64_t)flowctl_cfg.period_ms : 2000) * 1000;
+      uint64_t slot = (phase ? (now_us / phase) : 0);
+      adv = (slot % 2 == 0) ? flowctl_cfg.high_kbps : flowctl_cfg.low_kbps;
+      break;
+    }
+
+    case FLOWCTL_MODE_XOFF:
+      /* handled by caller */
+      adv = measured_kbps;
+      break;
+
+    default:
+      adv = measured_kbps;
+      break;
+  }
+
+  /* Never advertise 0 here. In this file, rate==0 may be treated as "no limit".
+   * If you want "pause", use XOFF mode.
+   */
+  if (adv == 0) adv = 1;
+  if (adv > (uint32_t)INT32_MAX) adv = (uint32_t)INT32_MAX;
+
+  return adv;
+}
+
+/* ===================== End Client-only FlowCtl knobs ===================== */
+
+/* BORING TEST */
 
 /* In normal operation, we can get a burst of up to 32 cells before returning
  * to libevent to flush the outbuf. This is a heuristic from hardcoded values
@@ -217,6 +445,30 @@ circuit_send_stream_xon(edge_connection_t *stream)
   uint8_t payload[CELL_PAYLOAD_SIZE];
   ssize_t xon_size;
 
+  /* BORING TEST */
+
+  /* reload knobs (cheap: mtime check) */
+  (void)flowctl_maybe_reload_cfg();
+
+  /* If we are the CLIENT (AP conn), we may rewrite what we advertise. */
+  uint32_t measured_kbps = stream->ewma_drain_rate;
+  uint32_t advertised_kbps = measured_kbps;
+
+  if (TO_CONN(stream)->type == CONN_TYPE_AP) {
+    if (flowctl_cfg.mode == FLOWCTL_MODE_XOFF) {
+      if (flowctl_cfg.log_on) {
+        log_notice(LD_EDGE, "[flowctl] send XOFF (mode=xoff) stream=%p epoch=%" PRIu64,
+                   (void*)stream, (uint64_t)flowctl_epoch);
+      }
+      circuit_send_stream_xoff(stream);
+      return;
+    }
+
+    advertised_kbps = flowctl_compute_advertised_kbps(measured_kbps);
+  }
+
+  /* BORING TEST */
+
   memset(&xon, 0, sizeof(xon));
   memset(payload, 0, sizeof(payload));
 
@@ -230,7 +482,10 @@ circuit_send_stream_xon(edge_connection_t *stream)
 
   /* Store the advisory rate information, to send advisory updates if
    * it changes */
-  stream->ewma_rate_last_sent = stream->ewma_drain_rate;
+  /* BORING TEST */
+  //stream->ewma_rate_last_sent = stream->ewma_drain_rate;
+  stream->ewma_rate_last_sent = advertised_kbps;
+  /* BORING TEST */
 
   if (connection_edge_send_command(stream, RELAY_COMMAND_XON, (char*)payload,
                                    (size_t)xon_size) == 0) {
@@ -238,6 +493,18 @@ circuit_send_stream_xon(edge_connection_t *stream)
     stream->xoff_sent = false;
 
     cc_stats_flow_num_xon_sent++;
+
+    /* BORING TEST */
+    stream->flowctl_epoch_last_sent = flowctl_epoch;
+
+    if (flowctl_cfg.log_on && TO_CONN(stream)->type == CONN_TYPE_AP) {
+      log_notice(LD_EDGE,
+        "[flowctl] sent XON stream=%p measured_kbps=%u adv_kbps=%u outbuf=%" TOR_PRIuSZ " epoch=%" PRIu64,
+        (void*)stream, measured_kbps, advertised_kbps,
+        connection_get_outbuf_len(TO_CONN(stream)),
+        (uint64_t)flowctl_epoch);
+    }
+    /* BORING TEST */
 
     /* If it's an entry conn, notify control port */
     if (TO_CONN(stream)->type == CONN_TYPE_AP) {
@@ -552,6 +819,16 @@ stream_drain_rate_changed(const edge_connection_t *stream)
   if (!is_monotime_clock_reliable()) {
     return false;
   }
+
+  /* BORING TEST */
+  /* Client-only: if knobs changed, force an advisory update quickly. */
+  if (TO_CONN(stream)->type == CONN_TYPE_AP) {
+    if (stream->flowctl_epoch_last_sent != flowctl_epoch &&
+        flowctl_cfg.mode != FLOWCTL_MODE_OFF) {
+      return true;
+    }
+  }
+  /* BORING TEST */
 
   if (!stream->ewma_rate_last_sent) {
     return false;
