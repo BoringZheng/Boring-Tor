@@ -473,7 +473,7 @@ circuit_send_stream_xon(edge_connection_t *stream)
   memset(payload, 0, sizeof(payload));
 
   xon_cell_set_version(&xon, 0);
-  xon_cell_set_kbps_ewma(&xon, stream->ewma_drain_rate);
+  xon_cell_set_kbps_ewma(&xon, advertised_kbps);
 
   if ((xon_size = xon_cell_encode(payload, CELL_PAYLOAD_SIZE, &xon)) < 0) {
     log_warn(LD_BUG, "Failed to encode xon cell");
@@ -822,11 +822,30 @@ stream_drain_rate_changed(const edge_connection_t *stream)
 
   /* BORING TEST */
   /* Client-only: if knobs changed, force an advisory update quickly. */
-  if (TO_CONN(stream)->type == CONN_TYPE_AP) {
-    if (stream->flowctl_epoch_last_sent != flowctl_epoch &&
-        flowctl_cfg.mode != FLOWCTL_MODE_OFF) {
-      return true;
+  if (TO_CONN(stream)->type == CONN_TYPE_AP &&
+      flowctl_cfg.mode != FLOWCTL_MODE_OFF) {
+
+    uint32_t adv_now = flowctl_compute_advertised_kbps(stream->ewma_drain_rate);
+
+    /* 如果从未发过，就别触发，避免启动抖动 */
+    if (!stream->ewma_rate_last_sent)
+      return false;
+
+    /* ✅ square 的核心：相位变了就必须发一次 */
+    if (flowctl_cfg.mode == FLOWCTL_MODE_SQUARE) {
+      return adv_now != stream->ewma_rate_last_sent;
     }
+
+    /* 其它模式：保留原来的 change_pct 阈值逻辑（用 measured 或 adv 都行，但要一致） */
+    if (adv_now >
+        (100+(uint64_t)xon_change_pct)*stream->ewma_rate_last_sent/100)
+      return true;
+
+    if (adv_now <
+        (100-(uint64_t)xon_change_pct)*stream->ewma_rate_last_sent/100)
+      return true;
+
+    return false;
   }
   /* BORING TEST */
 
