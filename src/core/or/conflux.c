@@ -804,6 +804,16 @@ conflux_process_switch_command(circuit_t *in_circ,
 
   relative_seq = conflux_cell_parse_switch(msg);
 
+  /* BORING TEST */
+  if (CIRCUIT_IS_ORIGIN(in_circ)) {
+    const origin_circuit_t *ocirc = CONST_TO_ORIGIN_CIRCUIT(in_circ);
+    log_notice(LD_CIRC,
+               "Conflux switched incoming data leg on client circ=%u "
+               "relative_seq=%u.",
+               ocirc->global_identifier, relative_seq);
+  }
+  /* BORING TEST */
+
   /*
    * We have to make sure that the switch command is truely
    * incrementing the sequence number, or else it becomes

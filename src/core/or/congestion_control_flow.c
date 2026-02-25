@@ -960,6 +960,19 @@ flow_control_decide_xon(edge_connection_t *stream, size_t n_written)
   /* If we don't have an XOFF outstanding, consider updating an
    * old rate */
   if (!stream->xoff_sent) {
+    /* BORING TEST */
+    if (TO_CONN(stream)->type == CONN_TYPE_AP &&
+        flowctl_cfg.mode == FLOWCTL_MODE_SQUARE &&
+        stream->ewma_rate_last_sent == 0 &&
+        total_buffered > 0) {
+      log_info(LD_EDGE, "Sending bootstrap square XON: %d %d %"TOR_PRIuSZ,
+               stream->ewma_rate_last_sent,
+               stream->ewma_drain_rate,
+               total_buffered);
+      circuit_send_stream_xon(stream);
+    }
+    /* BORING TEST */
+
     if (stream_drain_rate_changed(stream)) {
       /* If we are still buffering and the rate changed, update
        * advisory XON */
