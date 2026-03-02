@@ -96,6 +96,13 @@ static const node_t *choose_good_middle_server(const origin_circuit_t *,
                           cpath_build_state_t *state,
                           crypt_path_t *head,
                           int cur_len);
+/* BORING TEST */
+/* Keep RP selection tied to configured ExitNodes when requested. */
+static const node_t *choose_good_exit_server_from_routerset(
+                          const routerset_t *pick_from,
+                          const routerset_t *exclude_set,
+                          router_crn_flags_t flags);
+/* BORING TEST */
 
 /** This function tries to get a channel to the specified endpoint,
  * and then calls command_setup_channel() to give it the right
@@ -1921,6 +1928,37 @@ pick_restricted_middle_node(router_crn_flags_t flags,
   return middle_node;
 }
 
+/* BORING TEST */
+/* Pick a node from a configured routerset, but still enforce the normal
+ * suitability checks for this circuit position and purpose. */
+static const node_t *
+choose_good_exit_server_from_routerset(const routerset_t *pick_from,
+                                       const routerset_t *exclude_set,
+                                       router_crn_flags_t flags)
+{
+  const node_t *node = NULL;
+  smartlist_t *live_nodes = smartlist_new();
+
+  tor_assert(pick_from);
+
+  routerset_get_all_nodes(live_nodes, pick_from, exclude_set, 1);
+  SMARTLIST_FOREACH_BEGIN(live_nodes, const node_t *, live_node) {
+    if (!router_can_choose_node(live_node, flags)) {
+      SMARTLIST_DEL_CURRENT(live_nodes, live_node);
+    }
+  } SMARTLIST_FOREACH_END(live_node);
+
+  if (smartlist_len(live_nodes) <= MAX_SANE_RESTRICTED_NODES) {
+    node = smartlist_choose(live_nodes);
+  } else {
+    node = node_sl_choose_by_bandwidth(live_nodes, NO_WEIGHTING);
+  }
+
+  smartlist_free(live_nodes);
+  return node;
+}
+/* BORING TEST */
+
 /** Return a pointer to a suitable router to be the exit node for the
  * circuit of purpose <b>purpose</b> that we're about to build (or NULL
  * if no router is suitable).
@@ -1948,6 +1986,24 @@ choose_good_exit_server(origin_circuit_t *circ,
       tor_assert_nonfatal(is_internal);
       /* We want to avoid picking certain nodes for HS purposes. */
       flags |= CRN_FOR_HS;
+      /* BORING TEST */
+      /* If ExitNodes is configured, force the client rendezvous point to be
+       * chosen from that set as well, including IP-based routerset entries. */
+      if (TO_CIRCUIT(circ)->purpose == CIRCUIT_PURPOSE_C_ESTABLISH_REND &&
+          options->ExitNodes) {
+        const node_t *node = choose_good_exit_server_from_routerset(
+            options->ExitNodes, options->ExcludeExitNodesUnion_, flags);
+        if (!node) {
+          log_warn(LD_CIRC,
+                   "No nodes in ExitNodes%s seem usable as a rendezvous "
+                   "point: can't choose a rendezvous point.",
+                   options->ExcludeExitNodesUnion_ ?
+                   ", except possibly those excluded by your configuration, " :
+                   "");
+        }
+        return node;
+      }
+      /* BORING TEST */
       FALLTHROUGH;
     case CIRCUIT_PURPOSE_CONFLUX_UNLINKED:
     case CIRCUIT_PURPOSE_C_GENERAL:
@@ -2008,7 +2064,12 @@ warn_if_last_router_excluded(origin_circuit_t *circ,
     case CIRCUIT_PURPOSE_C_REND_READY:
     case CIRCUIT_PURPOSE_C_REND_READY_INTRO_ACKED:
     case CIRCUIT_PURPOSE_C_REND_JOINED:
+      /* BORING TEST */
+      /* Rendezvous points now follow the same exit exclusion set as normal
+       * exits so diagnostics match the enforced selection behavior. */
       description = "chosen rendezvous point";
+      rs = options->ExcludeExitNodesUnion_;
+      /* BORING TEST */
       break;
     case CIRCUIT_PURPOSE_CONTROLLER:
       rs = options->ExcludeExitNodesUnion_;
