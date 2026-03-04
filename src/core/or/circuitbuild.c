@@ -2186,11 +2186,19 @@ onion_pick_cpath_exit(origin_circuit_t *circ, extend_info_t *exit_ei)
     }
     exit_ei = extend_info_from_node(node, state->onehop_tunnel,
                 /* for_exit_use */
-                !state->is_internal && (
+                (!state->is_internal && (
                   TO_CIRCUIT(circ)->purpose ==
                   CIRCUIT_PURPOSE_C_GENERAL ||
                   TO_CIRCUIT(circ)->purpose ==
-                  CIRCUIT_PURPOSE_CONFLUX_UNLINKED));
+                  CIRCUIT_PURPOSE_CONFLUX_UNLINKED))
+                /* BORING TEST */
+                /* Client RP circuits also need congestion-control capability
+                 * copied into extend_info so the direct connection to the RP
+                 * can negotiate ntor v3 flow control extensions. */
+                || TO_CIRCUIT(circ)->purpose ==
+                  CIRCUIT_PURPOSE_C_ESTABLISH_REND
+                /* BORING TEST */
+                );
     if (BUG(exit_ei == NULL))
       return -1;
   }

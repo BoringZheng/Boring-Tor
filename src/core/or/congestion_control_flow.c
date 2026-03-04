@@ -878,6 +878,15 @@ flow_control_decide_xon(edge_connection_t *stream, size_t n_written)
 {
   size_t total_buffered = connection_get_outbuf_len(TO_CONN(stream));
 
+  /* BORING TEST */
+  /* Reload client flow-control knobs before any XON decision that depends on
+   * the active mode, otherwise a fresh mode=square config stays stuck at the
+   * default OFF state until some unrelated XON path happens first. */
+  if (TO_CONN(stream)->type == CONN_TYPE_AP) {
+    (void)flowctl_maybe_reload_cfg();
+  }
+  /* BORING TEST */
+
   /* Bounds check the number of drained bytes, and scale */
   if (stream->drained_bytes >= UINT32_MAX - n_written) {
     /* Cut the bytes in half, and move the start time up halfway to now
