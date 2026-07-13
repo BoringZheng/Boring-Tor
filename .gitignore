@@ -4,6 +4,7 @@
 *~
 *.swp
 *.swo
+*:Zone.Identifier
 # C stuff
 *.o
 *.a
