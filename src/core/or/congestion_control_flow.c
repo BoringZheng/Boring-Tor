@@ -84,6 +84,9 @@ typedef struct flowctl_cfg_t {
   uint32_t low_kbps;
   uint32_t period_ms;
 
+  /* config writer correlation */
+  uint64_t command_id;
+
   /* logging */
   int log_on;
 } flowctl_cfg_t;
@@ -96,11 +99,17 @@ static flowctl_cfg_t flowctl_cfg = {
   .high_kbps = 0,
   .low_kbps = 0,
   .period_ms = 2000,
+  .command_id = 0,
   .log_on = 1,
 };
 
 static uint64_t flowctl_epoch = 1;           /* bump on cfg reload */
-static time_t flowctl_cfg_mtime = 0;
+/* Track full nanosecond-precision mtime so sub-second config rewrites (e.g. a
+ * 400ms symbol slot => 2.5 rewrites/sec) are detected. A bare time_t st_mtime
+ * only has 1-second granularity, which silently collapses every rewrite within
+ * the same wall-clock second into a single reload and caps the symbol rate at
+ * <= 1 Hz regardless of the configured slot/period. */
+static struct timespec flowctl_cfg_mtim = {0, 0};
 
 static inline const char *
 flowctl_cfg_path(void)
@@ -149,7 +158,8 @@ flowctl_maybe_reload_cfg(void)
     /* no file => keep current cfg */
     return 0;
   }
-  if (st.st_mtime == flowctl_cfg_mtime) {
+  if (st.st_mtim.tv_sec == flowctl_cfg_mtim.tv_sec &&
+      st.st_mtim.tv_nsec == flowctl_cfg_mtim.tv_nsec) {
     return 0;
   }
 
@@ -189,6 +199,8 @@ flowctl_maybe_reload_cfg(void)
     } else if (!strcasecmp(k, "period_ms")) {
       newcfg.period_ms = (uint32_t)strtoul(v, NULL, 10);
       if (newcfg.period_ms == 0) newcfg.period_ms = 2000;
+    } else if (!strcasecmp(k, "command_id")) {
+      newcfg.command_id = (uint64_t)strtoull(v, NULL, 10);
     } else if (!strcasecmp(k, "log")) {
       newcfg.log_on = (int)strtol(v, NULL, 10);
     }
@@ -197,12 +209,12 @@ flowctl_maybe_reload_cfg(void)
   fclose(fp);
 
   flowctl_cfg = newcfg;
-  flowctl_cfg_mtime = st.st_mtime;
+  flowctl_cfg_mtim = st.st_mtim;
   flowctl_epoch++;
 
   if (flowctl_cfg.log_on) {
     log_notice(LD_EDGE,
-      "[flowctl] reload: mode=%d target=%u cap=%u scale=%u high=%u low=%u period_ms=%u epoch=%" PRIu64 " file=%s",
+      "[flowctl] reload: mode=%d target=%u cap=%u scale=%u high=%u low=%u period_ms=%u command_id=%" PRIu64 " epoch=%" PRIu64 " file=%s",
       (int)flowctl_cfg.mode,
       flowctl_cfg.target_kbps,
       flowctl_cfg.cap_kbps,
@@ -210,6 +222,7 @@ flowctl_maybe_reload_cfg(void)
       flowctl_cfg.high_kbps,
       flowctl_cfg.low_kbps,
       flowctl_cfg.period_ms,
+      flowctl_cfg.command_id,
       (uint64_t)flowctl_epoch,
       path);
   }
