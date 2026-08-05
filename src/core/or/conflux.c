@@ -804,7 +804,7 @@ conflux_process_switch_command(circuit_t *in_circ,
 
   relative_seq = conflux_cell_parse_switch(msg);
 
-  /* BORING TEST */
+  /* == Boring Test == */
   if (CIRCUIT_IS_ORIGIN(in_circ)) {
     const origin_circuit_t *ocirc = CONST_TO_ORIGIN_CIRCUIT(in_circ);
     log_notice(LD_CIRC,
@@ -812,7 +812,7 @@ conflux_process_switch_command(circuit_t *in_circ,
                "relative_seq=%u.",
                ocirc->global_identifier, relative_seq);
   }
-  /* BORING TEST */
+  /* == Boring Test == */
 
   /*
    * We have to make sure that the switch command is truely

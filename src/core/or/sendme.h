@@ -13,10 +13,13 @@
 #include "core/or/crypt_path_st.h"
 #include "core/or/circuit_st.h"
 
+typedef struct relay_msg_t relay_msg_t;
+
 /* Sending SENDME cell. */
 void sendme_connection_edge_consider_sending(edge_connection_t *edge_conn);
 void sendme_circuit_consider_sending(circuit_t *circ,
-                                     crypt_path_t *layer_hint);
+                                     crypt_path_t *layer_hint,
+                                     const relay_msg_t *msg);
 
 /* Processing SENDME cell. */
 int sendme_process_circuit_level(crypt_path_t *layer_hint,
@@ -59,6 +62,15 @@ void sendme_record_cell_digest_on_circ(circuit_t *circ, crypt_path_t *cpath);
  * Unit tests declaractions.
  */
 #ifdef TOR_UNIT_TESTS
+
+struct crypto_digest_t;
+
+STATIC bool predict_v0_data_tag(const struct crypto_digest_t *current_digest,
+                                streamid_t stream_id,
+                                const uint8_t *data,
+                                size_t data_len,
+                                unsigned int cell_count,
+                                uint8_t *tag_out);
 
 STATIC int get_emit_min_version(void);
 STATIC int get_accept_min_version(void);

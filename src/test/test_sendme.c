@@ -9,11 +9,14 @@
 #define RELAY_PRIVATE
 #define RELAY_CELL_PRIVATE
 
+#include "core/or/or.h"
+#include "core/or/cell_st.h"
 #include "core/or/circuit_st.h"
 #include "core/or/or_circuit_st.h"
 #include "core/or/origin_circuit_st.h"
 #include "core/or/circuitlist.h"
 #include "core/or/relay.h"
+#include "core/or/relay_msg.h"
 #include "core/or/sendme.h"
 
 #include "feature/nodelist/networkstatus.h"
@@ -233,6 +236,103 @@ test_cell_version_validation(void *arg)
   ;
 }
 
+static void
+test_predictive_tag(void *arg)
+{
+  const size_t payload_len =
+    relay_cell_max_payload_size(RELAY_CELL_FORMAT_V0, RELAY_COMMAND_DATA);
+  uint8_t *data = tor_malloc(payload_len * 5);
+  uint8_t predicted_tag[SENDME_TAG_LEN_TOR1];
+  uint8_t actual_tag[SENDME_TAG_LEN_TOR1];
+  crypto_digest_t *initial_digest = crypto_digest_new();
+  crypto_digest_t *actual_digest = NULL;
+  relay_msg_t msg;
+  cell_t cell;
+
+  (void) arg;
+
+  crypto_digest_add_bytes(initial_digest, "predictive-sendme", 17);
+  actual_digest = crypto_digest_dup(initial_digest);
+  for (size_t i = 0; i < payload_len * 5; ++i) {
+    data[i] = (uint8_t) (i * 31 + 7);
+  }
+
+  tt_assert(predict_v0_data_tag(initial_digest, 23, data, payload_len * 5,
+                                5, predicted_tag));
+
+  memset(&msg, 0, sizeof(msg));
+  msg.command = RELAY_COMMAND_DATA;
+  msg.stream_id = 23;
+  msg.length = payload_len;
+  for (unsigned int i = 0; i < 5; ++i) {
+    msg.body = data + i * payload_len;
+    tt_int_op(relay_msg_encode_cell(RELAY_CELL_FORMAT_V0, &msg, &cell),
+              OP_EQ, 0);
+    crypto_digest_add_bytes(actual_digest, (char *) cell.payload,
+                            CELL_PAYLOAD_SIZE);
+  }
+  crypto_digest_get_digest(actual_digest, (char *) actual_tag,
+                           sizeof(actual_tag));
+  tt_mem_op(predicted_tag, OP_EQ, actual_tag, sizeof(actual_tag));
+
+ done:
+  crypto_digest_free(actual_digest);
+  crypto_digest_free(initial_digest);
+  tor_free(data);
+}
+
+static void
+test_predictive_tag_partial_cell_mismatch(void *arg)
+{
+  const size_t payload_len =
+    relay_cell_max_payload_size(RELAY_CELL_FORMAT_V0, RELAY_COMMAND_DATA);
+  const size_t partial_len = 298;
+  uint8_t *data = tor_malloc(payload_len * 2);
+  uint8_t predicted_tag[SENDME_TAG_LEN_TOR1];
+  uint8_t actual_tag[SENDME_TAG_LEN_TOR1];
+  crypto_digest_t *initial_digest = crypto_digest_new();
+  crypto_digest_t *actual_digest = NULL;
+  relay_msg_t msg;
+  cell_t cell;
+
+  (void) arg;
+
+  crypto_digest_add_bytes(initial_digest, "predictive-sendme", 17);
+  actual_digest = crypto_digest_dup(initial_digest);
+  for (size_t i = 0; i < payload_len * 2; ++i) {
+    data[i] = (uint8_t) (i * 31 + 7);
+  }
+
+  tt_assert(predict_v0_data_tag(initial_digest, 23, data, payload_len * 2,
+                                2, predicted_tag));
+
+  memset(&msg, 0, sizeof(msg));
+  msg.command = RELAY_COMMAND_DATA;
+  msg.stream_id = 23;
+  msg.length = partial_len;
+  msg.body = data;
+  tt_int_op(relay_msg_encode_cell(RELAY_CELL_FORMAT_V0, &msg, &cell),
+            OP_EQ, 0);
+  crypto_digest_add_bytes(actual_digest, (char *) cell.payload,
+                          CELL_PAYLOAD_SIZE);
+
+  msg.length = payload_len;
+  msg.body = data + partial_len;
+  tt_int_op(relay_msg_encode_cell(RELAY_CELL_FORMAT_V0, &msg, &cell),
+            OP_EQ, 0);
+  crypto_digest_add_bytes(actual_digest, (char *) cell.payload,
+                          CELL_PAYLOAD_SIZE);
+
+  crypto_digest_get_digest(actual_digest, (char *) actual_tag,
+                           sizeof(actual_tag));
+  tt_mem_op(predicted_tag, OP_NE, actual_tag, sizeof(actual_tag));
+
+ done:
+  crypto_digest_free(actual_digest);
+  crypto_digest_free(initial_digest);
+  tor_free(data);
+}
+
 /* check our decisions about how much stuff to put into relay cells. */
 static void
 test_package_payload_len(void *arg)
@@ -326,6 +426,9 @@ struct testcase_t sendme_tests[] = {
     NULL, NULL },
   { "cell_version_validation", test_cell_version_validation, TT_FORK,
     NULL, NULL },
+  { "predictive_tag", test_predictive_tag, TT_FORK, NULL, NULL },
+  { "predictive_tag_partial_cell_mismatch",
+    test_predictive_tag_partial_cell_mismatch, TT_FORK, NULL, NULL },
   { "package_payload_len", test_package_payload_len, 0, NULL, NULL },
 
   END_OF_TESTCASES

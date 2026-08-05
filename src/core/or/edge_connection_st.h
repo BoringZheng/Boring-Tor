@@ -119,9 +119,9 @@ struct edge_connection_t {
    */
   uint32_t ewma_rate_last_sent;
 
-  /* BORING TEST */
+  /* == Boring Test == */
   uint64_t flowctl_epoch_last_sent;
-  /* BORING TEST */
+  /* == Boring Test == */
 
   /**
    * The following fields are used to count the total bytes sent on this

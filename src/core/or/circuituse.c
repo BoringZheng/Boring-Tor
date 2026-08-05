@@ -2047,7 +2047,9 @@ circuit_should_cannibalize_to_build(uint8_t purpose_to_build,
                                     int has_extend_info,
                                     int onehop_tunnel)
 {
+  /* == Boring Test == */
   const or_options_t *options = get_options();
+  /* == Boring Test == */
 
   /* Do not try to cannibalize if this is a one hop circuit. */
   if (onehop_tunnel) {
@@ -2084,7 +2086,7 @@ circuit_should_cannibalize_to_build(uint8_t purpose_to_build,
     return 0;
   }
 
-  /* BORING TEST */
+  /* == Boring Test == */
   /* A client rendezvous circuit with ExitNodes configured must be built with
    * a freshly chosen final hop, otherwise cannibalizing an existing internal
    * circuit would keep its random endpoint and bypass the forced RP choice. */
@@ -2092,7 +2094,7 @@ circuit_should_cannibalize_to_build(uint8_t purpose_to_build,
       options->ExitNodes) {
     return 0;
   }
-  /* BORING TEST */
+  /* == Boring Test == */
 
   return 1;
 }

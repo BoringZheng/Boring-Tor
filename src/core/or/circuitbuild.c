@@ -96,13 +96,13 @@ static const node_t *choose_good_middle_server(const origin_circuit_t *,
                           cpath_build_state_t *state,
                           crypt_path_t *head,
                           int cur_len);
-/* BORING TEST */
+/* == Boring Test == */
 /* Keep RP selection tied to configured ExitNodes when requested. */
 static const node_t *choose_good_exit_server_from_routerset(
                           const routerset_t *pick_from,
                           const routerset_t *exclude_set,
                           router_crn_flags_t flags);
-/* BORING TEST */
+/* == Boring Test == */
 
 /** This function tries to get a channel to the specified endpoint,
  * and then calls command_setup_channel() to give it the right
@@ -1928,7 +1928,7 @@ pick_restricted_middle_node(router_crn_flags_t flags,
   return middle_node;
 }
 
-/* BORING TEST */
+/* == Boring Test == */
 /* Pick a node from a configured routerset, but still enforce the normal
  * suitability checks for this circuit position and purpose. */
 static const node_t *
@@ -1957,7 +1957,7 @@ choose_good_exit_server_from_routerset(const routerset_t *pick_from,
   smartlist_free(live_nodes);
   return node;
 }
-/* BORING TEST */
+/* == Boring Test == */
 
 /** Return a pointer to a suitable router to be the exit node for the
  * circuit of purpose <b>purpose</b> that we're about to build (or NULL
@@ -1986,7 +1986,7 @@ choose_good_exit_server(origin_circuit_t *circ,
       tor_assert_nonfatal(is_internal);
       /* We want to avoid picking certain nodes for HS purposes. */
       flags |= CRN_FOR_HS;
-      /* BORING TEST */
+      /* == Boring Test == */
       /* If ExitNodes is configured, force the client rendezvous point to be
        * chosen from that set as well, including IP-based routerset entries. */
       if (TO_CIRCUIT(circ)->purpose == CIRCUIT_PURPOSE_C_ESTABLISH_REND &&
@@ -2003,7 +2003,7 @@ choose_good_exit_server(origin_circuit_t *circ,
         }
         return node;
       }
-      /* BORING TEST */
+      /* == Boring Test == */
       FALLTHROUGH;
     case CIRCUIT_PURPOSE_CONFLUX_UNLINKED:
     case CIRCUIT_PURPOSE_C_GENERAL:
@@ -2064,12 +2064,12 @@ warn_if_last_router_excluded(origin_circuit_t *circ,
     case CIRCUIT_PURPOSE_C_REND_READY:
     case CIRCUIT_PURPOSE_C_REND_READY_INTRO_ACKED:
     case CIRCUIT_PURPOSE_C_REND_JOINED:
-      /* BORING TEST */
+      /* == Boring Test == */
       /* Rendezvous points now follow the same exit exclusion set as normal
        * exits so diagnostics match the enforced selection behavior. */
       description = "chosen rendezvous point";
       rs = options->ExcludeExitNodesUnion_;
-      /* BORING TEST */
+      /* == Boring Test == */
       break;
     case CIRCUIT_PURPOSE_CONTROLLER:
       rs = options->ExcludeExitNodesUnion_;
@@ -2184,6 +2184,7 @@ onion_pick_cpath_exit(origin_circuit_t *circ, extend_info_t *exit_ei)
       log_warn(LD_CIRC,"Failed to choose an exit server");
       return -1;
     }
+    /* == Boring Test == */
     exit_ei = extend_info_from_node(node, state->onehop_tunnel,
                 /* for_exit_use */
                 (!state->is_internal && (
@@ -2191,14 +2192,13 @@ onion_pick_cpath_exit(origin_circuit_t *circ, extend_info_t *exit_ei)
                   CIRCUIT_PURPOSE_C_GENERAL ||
                   TO_CIRCUIT(circ)->purpose ==
                   CIRCUIT_PURPOSE_CONFLUX_UNLINKED))
-                /* BORING TEST */
                 /* Client RP circuits also need congestion-control capability
                  * copied into extend_info so the direct connection to the RP
                  * can negotiate ntor v3 flow control extensions. */
                 || TO_CIRCUIT(circ)->purpose ==
                   CIRCUIT_PURPOSE_C_ESTABLISH_REND
-                /* BORING TEST */
                 );
+    /* == Boring Test == */
     if (BUG(exit_ei == NULL))
       return -1;
   }

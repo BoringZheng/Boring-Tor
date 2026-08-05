@@ -30,12 +30,12 @@
 #include "app/config/config.h"
 #include "core/or/conflux_util.h"
 
-/* BORING TEST */
+/* == Boring Test == */
 #include <stdio.h>
 #include <sys/stat.h>
 #include <string.h>
 #include <ctype.h>
-/* BORING TEST */
+/* == Boring Test == */
 
 /** Cache consensus parameters */
 static uint32_t xoff_client;
@@ -51,7 +51,7 @@ uint64_t cc_stats_flow_num_xon_sent;
 double cc_stats_flow_xoff_outbuf_ma = 0;
 double cc_stats_flow_xon_outbuf_ma = 0;
 
-/* BORING TEST */
+/* == Boring Test == */
 
 /* ===================== Client-only FlowCtl knobs ===================== */
 /* A tiny runtime knob system (file-based) to rewrite XON kbps on CLIENT.
@@ -283,7 +283,7 @@ flowctl_compute_advertised_kbps(uint32_t measured_kbps)
 
 /* ===================== End Client-only FlowCtl knobs ===================== */
 
-/* BORING TEST */
+/* == Boring Test == */
 
 /* In normal operation, we can get a burst of up to 32 cells before returning
  * to libevent to flush the outbuf. This is a heuristic from hardcoded values
@@ -458,7 +458,7 @@ circuit_send_stream_xon(edge_connection_t *stream)
   uint8_t payload[CELL_PAYLOAD_SIZE];
   ssize_t xon_size;
 
-  /* BORING TEST */
+  /* == Boring Test == */
 
   /* reload knobs (cheap: mtime check) */
   (void)flowctl_maybe_reload_cfg();
@@ -480,13 +480,15 @@ circuit_send_stream_xon(edge_connection_t *stream)
     advertised_kbps = flowctl_compute_advertised_kbps(measured_kbps);
   }
 
-  /* BORING TEST */
+  /* == Boring Test == */
 
   memset(&xon, 0, sizeof(xon));
   memset(payload, 0, sizeof(payload));
 
   xon_cell_set_version(&xon, 0);
+  /* == Boring Test == */
   xon_cell_set_kbps_ewma(&xon, advertised_kbps);
+  /* == Boring Test == */
 
   if ((xon_size = xon_cell_encode(payload, CELL_PAYLOAD_SIZE, &xon)) < 0) {
     log_warn(LD_BUG, "Failed to encode xon cell");
@@ -495,10 +497,10 @@ circuit_send_stream_xon(edge_connection_t *stream)
 
   /* Store the advisory rate information, to send advisory updates if
    * it changes */
-  /* BORING TEST */
+  /* == Boring Test == */
   //stream->ewma_rate_last_sent = stream->ewma_drain_rate;
   stream->ewma_rate_last_sent = advertised_kbps;
-  /* BORING TEST */
+  /* == Boring Test == */
 
   if (connection_edge_send_command(stream, RELAY_COMMAND_XON, (char*)payload,
                                    (size_t)xon_size) == 0) {
@@ -507,7 +509,7 @@ circuit_send_stream_xon(edge_connection_t *stream)
 
     cc_stats_flow_num_xon_sent++;
 
-    /* BORING TEST */
+    /* == Boring Test == */
     stream->flowctl_epoch_last_sent = flowctl_epoch;
 
     if (flowctl_cfg.log_on && TO_CONN(stream)->type == CONN_TYPE_AP) {
@@ -517,7 +519,7 @@ circuit_send_stream_xon(edge_connection_t *stream)
         connection_get_outbuf_len(TO_CONN(stream)),
         (uint64_t)flowctl_epoch);
     }
-    /* BORING TEST */
+    /* == Boring Test == */
 
     /* If it's an entry conn, notify control port */
     if (TO_CONN(stream)->type == CONN_TYPE_AP) {
@@ -833,14 +835,18 @@ stream_drain_rate_changed(const edge_connection_t *stream)
     return false;
   }
 
-  /* BORING TEST */
+  /* == Boring Test == */
   /* Client-only: if knobs changed, force an advisory update quickly. */
   if (TO_CONN(stream)->type == CONN_TYPE_AP &&
       flowctl_cfg.mode != FLOWCTL_MODE_OFF) {
 
     uint32_t adv_now = flowctl_compute_advertised_kbps(stream->ewma_drain_rate);
 
-    /* 如果从未发过，就别触发，避免启动抖动 */
+    /* A committed config update must reach every active AP stream once,
+     * even when curl drains its outbuf before we observe it as non-empty. */
+    if (stream->flowctl_epoch_last_sent != flowctl_epoch)
+      return true;
+
     if (!stream->ewma_rate_last_sent)
       return false;
 
@@ -860,7 +866,7 @@ stream_drain_rate_changed(const edge_connection_t *stream)
 
     return false;
   }
-  /* BORING TEST */
+  /* == Boring Test == */
 
   if (!stream->ewma_rate_last_sent) {
     return false;
@@ -891,14 +897,14 @@ flow_control_decide_xon(edge_connection_t *stream, size_t n_written)
 {
   size_t total_buffered = connection_get_outbuf_len(TO_CONN(stream));
 
-  /* BORING TEST */
+  /* == Boring Test == */
   /* Reload client flow-control knobs before any XON decision that depends on
    * the active mode, otherwise a fresh mode=square config stays stuck at the
    * default OFF state until some unrelated XON path happens first. */
   if (TO_CONN(stream)->type == CONN_TYPE_AP) {
     (void)flowctl_maybe_reload_cfg();
   }
-  /* BORING TEST */
+  /* == Boring Test == */
 
   /* Bounds check the number of drained bytes, and scale */
   if (stream->drained_bytes >= UINT32_MAX - n_written) {
@@ -982,7 +988,7 @@ flow_control_decide_xon(edge_connection_t *stream, size_t n_written)
   /* If we don't have an XOFF outstanding, consider updating an
    * old rate */
   if (!stream->xoff_sent) {
-    /* BORING TEST */
+    /* == Boring Test == */
     if (TO_CONN(stream)->type == CONN_TYPE_AP &&
         flowctl_cfg.mode == FLOWCTL_MODE_SQUARE &&
         stream->ewma_rate_last_sent == 0 &&
@@ -993,7 +999,7 @@ flow_control_decide_xon(edge_connection_t *stream, size_t n_written)
                total_buffered);
       circuit_send_stream_xon(stream);
     }
-    /* BORING TEST */
+    /* == Boring Test == */
 
     if (stream_drain_rate_changed(stream)) {
       /* If we are still buffering and the rate changed, update

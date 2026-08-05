@@ -152,6 +152,9 @@ STATIC size_t connection_edge_get_inbuf_bytes_to_package(size_t n_available,
                                                       int package_partial,
                                                       circuit_t *on_circuit,
                                                       crypt_path_t *cpath);
+STATIC int predictive_sendme_adjust_package_partial(
+                                            const edge_connection_t *conn,
+                                            int package_partial);
 
 #endif /* defined(RELAY_PRIVATE) */
 
