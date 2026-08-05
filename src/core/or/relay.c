@@ -2341,6 +2341,26 @@ connection_edge_get_inbuf_bytes_to_package(size_t n_available,
  * Return -1 (and send a RELAY_COMMAND_END cell if necessary) if conn should
  * be marked for close, else return 0.
  */
+STATIC int
+predictive_sendme_adjust_package_partial(const edge_connection_t *conn,
+                                         int package_partial)
+{
+  const char *enabled = getenv("TOR_PREDICTIVE_SENDME_FULL_DATA_CELLS");
+  static bool enabled_logged = false;
+
+  if (package_partial && enabled != NULL && !strcmp(enabled, "1") &&
+      conn->base_.type == CONN_TYPE_EXIT &&
+      !conn->base_.inbuf_reached_eof) {
+    if (!enabled_logged) {
+      log_notice(LD_PROTOCOL,
+                 "Predictive SENDME deterministic DATA cells enabled");
+      enabled_logged = true;
+    }
+    return 0;
+  }
+  return package_partial;
+}
+
 int
 connection_edge_package_raw_inbuf(edge_connection_t *conn, int package_partial,
                                   int *max_cells)
@@ -2403,6 +2423,8 @@ connection_edge_package_raw_inbuf(edge_connection_t *conn, int package_partial,
     bytes_to_process = connection_get_inbuf_len(TO_CONN(conn));
   }
 
+  package_partial =
+    predictive_sendme_adjust_package_partial(conn, package_partial);
   length = connection_edge_get_inbuf_bytes_to_package(bytes_to_process,
                                                       package_partial, circ,
                                                       cpath_layer);

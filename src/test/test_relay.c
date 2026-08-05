@@ -16,6 +16,7 @@
 #include "core/or/scheduler.h"
 
 #include "core/or/cell_st.h"
+#include "core/or/edge_connection_st.h"
 #include "core/or/or_circuit_st.h"
 
 #define RESOLVE_ADDR_PRIVATE
@@ -34,6 +35,34 @@
 #include "test/fakecircs.h"
 
 static void test_relay_append_cell_to_circuit_queue(void *arg);
+
+static void
+test_relay_predictive_full_data_cells(void *arg)
+{
+  edge_connection_t conn;
+
+  (void) arg;
+  memset(&conn, 0, sizeof(conn));
+  conn.base_.type = CONN_TYPE_EXIT;
+
+  unsetenv("TOR_PREDICTIVE_SENDME_FULL_DATA_CELLS");
+  tt_int_op(predictive_sendme_adjust_package_partial(&conn, 1), OP_EQ, 1);
+
+  tt_int_op(setenv("TOR_PREDICTIVE_SENDME_FULL_DATA_CELLS", "1", 1),
+            OP_EQ, 0);
+  tt_int_op(predictive_sendme_adjust_package_partial(&conn, 1), OP_EQ, 0);
+  tt_int_op(predictive_sendme_adjust_package_partial(&conn, 0), OP_EQ, 0);
+
+  conn.base_.inbuf_reached_eof = 1;
+  tt_int_op(predictive_sendme_adjust_package_partial(&conn, 1), OP_EQ, 1);
+
+  conn.base_.inbuf_reached_eof = 0;
+  conn.base_.type = CONN_TYPE_AP;
+  tt_int_op(predictive_sendme_adjust_package_partial(&conn, 1), OP_EQ, 1);
+
+ done:
+  unsetenv("TOR_PREDICTIVE_SENDME_FULL_DATA_CELLS");
+}
 
 static int
 mock_server_mode_true(const or_options_t *options)
@@ -375,6 +404,8 @@ test_find_addr_to_publish(void *arg)
 }
 
 struct testcase_t relay_tests[] = {
+  { "predictive_full_data_cells", test_relay_predictive_full_data_cells,
+    TT_FORK, NULL, NULL },
   { "append_cell_to_circuit_queue", test_relay_append_cell_to_circuit_queue,
     TT_FORK, NULL, NULL },
   { "close_circ_rephist", test_relay_close_circuit,
