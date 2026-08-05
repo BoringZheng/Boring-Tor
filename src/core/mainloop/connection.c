@@ -140,6 +140,9 @@
 
 #include "feature/dircommon/dir_connection_st.h"
 #include "feature/control/control_connection_st.h"
+/* BORING TEST */
+#include "core/or/edge_connection_st.h"
+/* BORING TEST */
 #include "core/or/entry_connection_st.h"
 #include "core/or/listener_connection_st.h"
 #include "core/or/or_connection_st.h"
@@ -199,6 +202,19 @@ const tor_addr_t *conn_get_outbound_address(sa_family_t family,
                   const or_options_t *options, unsigned int conn_type);
 static void reenable_blocked_connection_init(const or_options_t *options);
 static void reenable_blocked_connection_schedule(void);
+
+/* BORING TEST */
+static bool
+hsfc_diag_is_hs_edge_conn(const connection_t *conn)
+{
+  if (!CONN_IS_EDGE(conn)) {
+    return false;
+  }
+
+  const edge_connection_t *edge = CONST_TO_EDGE_CONN(conn);
+  return edge->hs_ident != NULL;
+}
+/* BORING TEST */
 
 /** The last addresses that our network interface seemed to have been
  * binding to.  We use this as one way to detect when our IP changes.
@@ -3505,6 +3521,14 @@ connection_bucket_read_limit(connection_t *conn, time_t now)
   if (CONN_IS_EDGE(conn)) {
     const edge_connection_t *edge_conn = CONST_TO_EDGE_CONN(conn);
     conn_bucket = token_bucket_rw_get_read(&edge_conn->bucket);
+    /* BORING TEST */
+    if (edge_conn->hs_ident) {
+      log_info(LD_NET, "HSFC_DIAG_READ_LIMIT conn=%"PRIu64
+               " stream=%u conn_bucket=%ld",
+               conn->global_identifier, (unsigned)edge_conn->stream_id,
+               (long)conn_bucket);
+    }
+    /* BORING TEST */
     if (conn->type == CONN_TYPE_EXIT) {
       /* Decide between our limit and the global one. */
       goto end;
@@ -3790,6 +3814,20 @@ connection_consider_empty_read_buckets(connection_t *conn)
     return; /* all good, no need to stop it */
   }
 
+  /* BORING TEST */
+  if (hsfc_diag_is_hs_edge_conn(conn)) {
+    const edge_connection_t *edge_conn = CONST_TO_EDGE_CONN(conn);
+    log_info(LD_NET, "HSFC_DIAG_READ_STOP conn=%"PRIu64
+             " stream=%u reason=\"%s\" is_global=%d edge_bucket=%"TOR_PRIuSZ
+             " global_bucket=%"TOR_PRIuSZ" read_blocked=%d xoff=%d",
+             conn->global_identifier, (unsigned)edge_conn->stream_id,
+             reason, is_global,
+             token_bucket_rw_get_read(&edge_conn->bucket),
+             token_bucket_rw_get_read(&global_bucket),
+             conn->read_blocked_on_bw, edge_conn->xoff_received);
+  }
+  /* BORING TEST */
+
   LOG_FN_CONN(conn, (LOG_DEBUG, LD_NET, "%s", reason));
   connection_read_bw_exhausted(conn, is_global);
 }
@@ -3921,6 +3959,23 @@ reenable_blocked_connections_cb(mainloop_event_t *ev, void *arg)
   (void)ev;
   (void)arg;
   SMARTLIST_FOREACH_BEGIN(get_connection_array(), connection_t *, conn) {
+    /* BORING TEST */
+    const bool hsfc_diag_was_read_blocked =
+      conn->read_blocked_on_bw == 1 && hsfc_diag_is_hs_edge_conn(conn);
+    if (hsfc_diag_was_read_blocked) {
+      const edge_connection_t *edge_conn = CONST_TO_EDGE_CONN(conn);
+      const int will_start =
+        (!CONN_IS_EDGE(conn) || !TO_EDGE_CONN(conn)->xoff_received);
+      log_info(LD_NET, "HSFC_DIAG_REENABLE conn=%"PRIu64
+               " stream=%u will_start=%d reading_before=%d"
+               " bucket=%"TOR_PRIuSZ" read_blocked=%d xoff=%d",
+               conn->global_identifier, (unsigned)edge_conn->stream_id,
+               will_start, connection_is_reading(conn),
+               token_bucket_rw_get_read(&edge_conn->bucket),
+               conn->read_blocked_on_bw, edge_conn->xoff_received);
+    }
+    /* BORING TEST */
+
     /* For conflux, we noticed logs of connection_start_reading() called
      * multiple times while we were blocked from a previous XOFF, and this
      * was log was correlated with stalls during ssh uploads. So we added
@@ -3931,6 +3986,18 @@ reenable_blocked_connections_cb(mainloop_event_t *ev, void *arg)
         (!CONN_IS_EDGE(conn) || !TO_EDGE_CONN(conn)->xoff_received)) {
       connection_start_reading(conn);
     }
+    /* BORING TEST */
+    if (hsfc_diag_was_read_blocked) {
+      const edge_connection_t *edge_conn = CONST_TO_EDGE_CONN(conn);
+      log_info(LD_NET, "HSFC_DIAG_REENABLE_DONE conn=%"PRIu64
+               " stream=%u reading_after=%d bucket=%"TOR_PRIuSZ
+               " read_blocked_before_clear=%d xoff=%d",
+               conn->global_identifier, (unsigned)edge_conn->stream_id,
+               connection_is_reading(conn),
+               token_bucket_rw_get_read(&edge_conn->bucket),
+               conn->read_blocked_on_bw, edge_conn->xoff_received);
+    }
+    /* BORING TEST */
     conn->read_blocked_on_bw = 0;
     if (conn->write_blocked_on_bw == 1) {
       connection_start_writing(conn);
@@ -4129,6 +4196,12 @@ connection_buf_read_from_socket(connection_t *conn, ssize_t *max_to_read,
   ssize_t at_most = *max_to_read;
   size_t slack_in_buf, more_to_read;
   size_t n_read = 0, n_written = 0;
+  /* BORING TEST */
+  const bool hsfc_diag_hs_edge = hsfc_diag_is_hs_edge_conn(conn);
+  size_t hsfc_diag_bucket_before = 0;
+  size_t hsfc_diag_inbuf_before = 0;
+  int hsfc_diag_reading_before = 0;
+  /* BORING TEST */
 
   if (at_most == -1) { /* we need to initialize it */
     /* how many bytes are we allowed to read? */
@@ -4140,6 +4213,22 @@ connection_buf_read_from_socket(connection_t *conn, ssize_t *max_to_read,
   if (at_most > maximum) {
     at_most = maximum;
   }
+
+  /* BORING TEST */
+  if (hsfc_diag_hs_edge) {
+    edge_connection_t *edge_conn = TO_EDGE_CONN(conn);
+    hsfc_diag_bucket_before = token_bucket_rw_get_read(&edge_conn->bucket);
+    hsfc_diag_inbuf_before = buf_datalen(conn->inbuf);
+    hsfc_diag_reading_before = connection_is_reading(conn);
+    log_info(LD_NET, "HSFC_DIAG_READ_PRE conn=%"PRIu64
+             " stream=%u fd=%d at_most=%ld bucket=%"TOR_PRIuSZ
+             " inbuf=%"TOR_PRIuSZ" reading=%d read_blocked=%d xoff=%d",
+             conn->global_identifier, (unsigned)edge_conn->stream_id,
+             (int)conn->s, (long)at_most, hsfc_diag_bucket_before,
+             hsfc_diag_inbuf_before, hsfc_diag_reading_before,
+             conn->read_blocked_on_bw, edge_conn->xoff_received);
+  }
+  /* BORING TEST */
 
   slack_in_buf = buf_slack(conn->inbuf);
  again:
@@ -4294,6 +4383,22 @@ connection_buf_read_from_socket(connection_t *conn, ssize_t *max_to_read,
   }
 
   connection_buckets_decrement(conn, approx_time(), n_read, n_written);
+
+  /* BORING TEST */
+  if (hsfc_diag_hs_edge) {
+    edge_connection_t *edge_conn = TO_EDGE_CONN(conn);
+    const size_t bucket_after = token_bucket_rw_get_read(&edge_conn->bucket);
+    log_info(LD_NET, "HSFC_DIAG_READ_POST conn=%"PRIu64
+             " stream=%u fd=%d n_read=%"TOR_PRIuSZ" result=%d"
+             " bucket_before=%"TOR_PRIuSZ" bucket_after=%"TOR_PRIuSZ
+             " max_to_read_now=%ld inbuf_before=%"TOR_PRIuSZ
+             " inbuf_after=%"TOR_PRIuSZ" edge_bucket_empty=%d",
+             conn->global_identifier, (unsigned)edge_conn->stream_id,
+             (int)conn->s, n_read, result, hsfc_diag_bucket_before,
+             bucket_after, (long)*max_to_read, hsfc_diag_inbuf_before,
+             buf_datalen(conn->inbuf), bucket_after == 0);
+  }
+  /* BORING TEST */
 
   if (more_to_read && result == at_most) {
     slack_in_buf = buf_slack(conn->inbuf);

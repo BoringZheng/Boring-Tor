@@ -101,6 +101,9 @@
 #include "core/or/sendme.h"
 #include "core/or/congestion_control_common.h"
 #include "core/or/congestion_control_flow.h"
+/* BORING TEST */
+#include "core/or/congestion_control_st.h"
+/* BORING TEST */
 #include "core/or/conflux.h"
 #include "core/or/conflux_util.h"
 #include "core/or/conflux_pool.h"
@@ -130,6 +133,43 @@ static int connection_edge_process_ordered_relay_cell(const relay_msg_t *msg,
 static void set_block_state_for_streams(circuit_t *circ,
                                         edge_connection_t *stream_list,
                                         int block, streamid_t stream_id);
+
+/* BORING TEST */
+static uint64_t
+hsfc_diag_circ_id(circuit_t *circ)
+{
+  if (CIRCUIT_IS_ORIGIN(circ)) {
+    return TO_ORIGIN_CIRCUIT(circ)->global_identifier;
+  } else {
+    return TO_OR_CIRCUIT(circ)->p_circ_id;
+  }
+}
+
+static const congestion_control_t *
+hsfc_diag_ccontrol(circuit_t *circ, const crypt_path_t *layer_hint)
+{
+  if (layer_hint) {
+    return layer_hint->ccontrol;
+  } else {
+    return circ->ccontrol;
+  }
+}
+
+static int
+hsfc_diag_count_hs_streams(edge_connection_t *first_conn,
+                           crypt_path_t *layer_hint)
+{
+  int n = 0;
+
+  for (edge_connection_t *conn = first_conn; conn; conn = conn->next_stream) {
+    if (conn->hs_ident && edge_uses_cpath(conn, layer_hint)) {
+      ++n;
+    }
+  }
+
+  return n;
+}
+/* BORING TEST */
 
 /** Stats: how many relay cells have originated at this hop, or have
  * been relayed onward (not recognized at this hop)?
@@ -1551,11 +1591,37 @@ process_sendme_cell(const relay_msg_t *msg, circuit_t *circ,
 
   if (!msg->stream_id) {
     /* Circuit level SENDME cell. */
+    /* BORING TEST */
+    edge_connection_t *streams = CIRCUIT_IS_ORIGIN(circ) ?
+      TO_ORIGIN_CIRCUIT(circ)->p_streams : TO_OR_CIRCUIT(circ)->n_streams;
+    const int hs_streams = hsfc_diag_count_hs_streams(streams, layer_hint);
+    if (hs_streams) {
+      const congestion_control_t *cc = hsfc_diag_ccontrol(circ, layer_hint);
+      log_info(domain, "HSFC_DIAG_SENDME_RECV circ=%"PRIu64
+               " hs_streams=%d package_window_before=%d"
+               " cwnd=%"PRIu64" inflight=%"PRIu64" sendme_len=%u",
+               hsfc_diag_circ_id(circ), hs_streams,
+               circuit_get_package_window(circ, layer_hint),
+               cc ? cc->cwnd : 0, cc ? cc->inflight : 0,
+               (unsigned)msg->length);
+    }
+    /* BORING TEST */
     ret = sendme_process_circuit_level(layer_hint, circ, msg->body,
                                        msg->length);
     if (ret < 0) {
       return ret;
     }
+    /* BORING TEST */
+    if (hs_streams) {
+      const congestion_control_t *cc = hsfc_diag_ccontrol(circ, layer_hint);
+      log_info(domain, "HSFC_DIAG_SENDME_RESUME circ=%"PRIu64
+               " hs_streams=%d package_window_after=%d"
+               " cwnd=%"PRIu64" inflight=%"PRIu64,
+               hsfc_diag_circ_id(circ), hs_streams,
+               circuit_get_package_window(circ, layer_hint),
+               cc ? cc->cwnd : 0, cc ? cc->inflight : 0);
+    }
+    /* BORING TEST */
     /* Resume reading on any streams now that we've processed a valid
      * SENDME cell that updated our package window. */
     circuit_resume_edge_reading(circ, layer_hint);
@@ -2409,6 +2475,17 @@ static void
 circuit_resume_edge_reading(circuit_t *circ, crypt_path_t *layer_hint)
 {
   if (circuit_queue_streams_are_blocked(circ)) {
+    /* BORING TEST */
+    edge_connection_t *streams = CIRCUIT_IS_ORIGIN(circ) ?
+      TO_ORIGIN_CIRCUIT(circ)->p_streams : TO_OR_CIRCUIT(circ)->n_streams;
+    const int hs_streams = hsfc_diag_count_hs_streams(streams, layer_hint);
+    if (hs_streams) {
+      log_info(LD_CIRC, "HSFC_DIAG_RESUME_SKIP circ=%"PRIu64
+               " reason=queue_blocked hs_streams=%d package_window=%d",
+               hsfc_diag_circ_id(circ), hs_streams,
+               circuit_get_package_window(circ, layer_hint));
+    }
+    /* BORING TEST */
     log_debug(layer_hint?LD_APP:LD_EXIT,"Too big queue, no resuming");
     return;
   }
@@ -2416,6 +2493,17 @@ circuit_resume_edge_reading(circuit_t *circ, crypt_path_t *layer_hint)
   /* If we have a conflux negotiated, and it still can't send on
    * any circuit, then do not resume sending. */
   if (circ->conflux && !conflux_can_send(circ->conflux)) {
+    /* BORING TEST */
+    edge_connection_t *streams = CIRCUIT_IS_ORIGIN(circ) ?
+      TO_ORIGIN_CIRCUIT(circ)->p_streams : TO_OR_CIRCUIT(circ)->n_streams;
+    const int hs_streams = hsfc_diag_count_hs_streams(streams, layer_hint);
+    if (hs_streams) {
+      log_info(LD_CIRC, "HSFC_DIAG_RESUME_SKIP circ=%"PRIu64
+               " reason=conflux_blocked hs_streams=%d package_window=%d",
+               hsfc_diag_circ_id(circ), hs_streams,
+               circuit_get_package_window(circ, layer_hint));
+    }
+    /* BORING TEST */
     log_debug(layer_hint?LD_APP:LD_EXIT,
               "Conflux can't send, not resuming edges");
     return;
@@ -2492,13 +2580,47 @@ circuit_resume_edge_reading_helper(edge_connection_t *first_conn,
   /* Activate reading starting from the chosen stream */
   for (conn=chosen_stream; conn; conn = conn->next_stream) {
     /* Start reading for the streams starting from here */
-    if (conn->base_.marked_for_close || conn->package_window <= 0)
+    /* BORING TEST */
+    if (conn->base_.marked_for_close || conn->package_window <= 0) {
+      if (conn->hs_ident) {
+        log_info(LD_CIRC, "HSFC_DIAG_RESUME_SKIP conn=%"PRIu64
+                 " stream=%u circ=%"PRIu64
+                 " reason=%s stream_package_window=%d",
+                 TO_CONN(conn)->global_identifier, (unsigned)conn->stream_id,
+                 hsfc_diag_circ_id(circ),
+                 conn->base_.marked_for_close ? "marked_for_close" :
+                   "stream_package_window",
+                 conn->package_window);
+      }
       continue;
+    }
+    /* BORING TEST */
 
     if (edge_uses_cpath(conn, layer_hint)) {
+      /* BORING TEST */
       if (!conn->xoff_received) {
+        if (conn->hs_ident) {
+          log_info(LD_CIRC, "HSFC_DIAG_RESUME_START conn=%"PRIu64
+                   " stream=%u circ=%"PRIu64
+                   " package_window=%d circuit_window=%d"
+                   " bucket=%"TOR_PRIuSZ" reading_before=%d",
+                   TO_CONN(conn)->global_identifier,
+                   (unsigned)conn->stream_id, hsfc_diag_circ_id(circ),
+                   conn->package_window,
+                   circuit_get_package_window(circ, layer_hint),
+                   token_bucket_rw_get_read(&conn->bucket),
+                   connection_is_reading(TO_CONN(conn)));
+        }
         connection_start_reading(TO_CONN(conn));
+      } else if (conn->hs_ident) {
+        log_info(LD_CIRC, "HSFC_DIAG_RESUME_SKIP conn=%"PRIu64
+                 " stream=%u circ=%"PRIu64" reason=xoff"
+                 " package_window=%d circuit_window=%d",
+                 TO_CONN(conn)->global_identifier, (unsigned)conn->stream_id,
+                 hsfc_diag_circ_id(circ), conn->package_window,
+                 circuit_get_package_window(circ, layer_hint));
       }
+      /* BORING TEST */
 
       if (connection_get_inbuf_len(TO_CONN(conn)) > 0)
         ++n_packaging_streams;
@@ -2506,13 +2628,47 @@ circuit_resume_edge_reading_helper(edge_connection_t *first_conn,
   }
   /* Go back and do the ones we skipped, circular-style */
   for (conn = first_conn; conn != chosen_stream; conn = conn->next_stream) {
-    if (conn->base_.marked_for_close || conn->package_window <= 0)
+    /* BORING TEST */
+    if (conn->base_.marked_for_close || conn->package_window <= 0) {
+      if (conn->hs_ident) {
+        log_info(LD_CIRC, "HSFC_DIAG_RESUME_SKIP conn=%"PRIu64
+                 " stream=%u circ=%"PRIu64
+                 " reason=%s stream_package_window=%d",
+                 TO_CONN(conn)->global_identifier, (unsigned)conn->stream_id,
+                 hsfc_diag_circ_id(circ),
+                 conn->base_.marked_for_close ? "marked_for_close" :
+                   "stream_package_window",
+                 conn->package_window);
+      }
       continue;
+    }
+    /* BORING TEST */
 
     if (edge_uses_cpath(conn, layer_hint)) {
+      /* BORING TEST */
       if (!conn->xoff_received) {
+        if (conn->hs_ident) {
+          log_info(LD_CIRC, "HSFC_DIAG_RESUME_START conn=%"PRIu64
+                   " stream=%u circ=%"PRIu64
+                   " package_window=%d circuit_window=%d"
+                   " bucket=%"TOR_PRIuSZ" reading_before=%d",
+                   TO_CONN(conn)->global_identifier,
+                   (unsigned)conn->stream_id, hsfc_diag_circ_id(circ),
+                   conn->package_window,
+                   circuit_get_package_window(circ, layer_hint),
+                   token_bucket_rw_get_read(&conn->bucket),
+                   connection_is_reading(TO_CONN(conn)));
+        }
         connection_start_reading(TO_CONN(conn));
+      } else if (conn->hs_ident) {
+        log_info(LD_CIRC, "HSFC_DIAG_RESUME_SKIP conn=%"PRIu64
+                 " stream=%u circ=%"PRIu64" reason=xoff"
+                 " package_window=%d circuit_window=%d",
+                 TO_CONN(conn)->global_identifier, (unsigned)conn->stream_id,
+                 hsfc_diag_circ_id(circ), conn->package_window,
+                 circuit_get_package_window(circ, layer_hint));
       }
+      /* BORING TEST */
 
       if (connection_get_inbuf_len(TO_CONN(conn)) > 0)
         ++n_packaging_streams;
@@ -2621,6 +2777,20 @@ circuit_consider_stop_edge_reading(circuit_t *circ, crypt_path_t *layer_hint)
     log_debug(domain,"considering circ->package_window %d",
               circ->package_window);
     if (circuit_get_package_window(circ, layer_hint) <= 0) {
+      /* BORING TEST */
+      const int hs_streams =
+        hsfc_diag_count_hs_streams(or_circ->n_streams, layer_hint);
+      if (hs_streams) {
+        const congestion_control_t *cc = hsfc_diag_ccontrol(circ, layer_hint);
+        log_info(domain, "HSFC_DIAG_CIRC_STOP circ=%"PRIu64
+                 " side=not_origin hs_streams=%d package_window=%d"
+                 " raw_package_window=%d cwnd=%"PRIu64" inflight=%"PRIu64,
+                 hsfc_diag_circ_id(circ), hs_streams,
+                 circuit_get_package_window(circ, layer_hint),
+                 circ->package_window, cc ? cc->cwnd : 0,
+                 cc ? cc->inflight : 0);
+      }
+      /* BORING TEST */
       log_debug(domain,"yes, not-at-origin. stopped.");
       for (conn = or_circ->n_streams; conn; conn=conn->next_stream)
         connection_stop_reading(TO_CONN(conn));
@@ -2632,6 +2802,20 @@ circuit_consider_stop_edge_reading(circuit_t *circ, crypt_path_t *layer_hint)
   log_debug(domain,"considering layer_hint->package_window %d",
             layer_hint->package_window);
   if (circuit_get_package_window(circ, layer_hint) <= 0) {
+    /* BORING TEST */
+    const int hs_streams = hsfc_diag_count_hs_streams(
+        TO_ORIGIN_CIRCUIT(circ)->p_streams, layer_hint);
+    if (hs_streams) {
+      const congestion_control_t *cc = hsfc_diag_ccontrol(circ, layer_hint);
+      log_info(domain, "HSFC_DIAG_CIRC_STOP circ=%"PRIu64
+               " side=origin hs_streams=%d package_window=%d"
+               " raw_package_window=%d cwnd=%"PRIu64" inflight=%"PRIu64,
+               hsfc_diag_circ_id(circ), hs_streams,
+               circuit_get_package_window(circ, layer_hint),
+               layer_hint->package_window, cc ? cc->cwnd : 0,
+               cc ? cc->inflight : 0);
+    }
+    /* BORING TEST */
     log_debug(domain,"yes, at-origin. stopped.");
     for (conn = TO_ORIGIN_CIRCUIT(circ)->p_streams; conn;
          conn=conn->next_stream) {

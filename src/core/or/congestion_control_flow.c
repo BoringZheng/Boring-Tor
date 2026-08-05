@@ -423,14 +423,43 @@ circuit_process_stream_xon(edge_connection_t *conn,
 
   log_info(LD_EDGE, "Got XON: %d", xon->kbps_ewma);
 
+  /* Instrumentation: log inter-XON gap with microsecond precision */
+  {
+    static uint64_t last_xon_usec = 0;
+    uint64_t now_usec = monotime_coarse_absolute_usec();
+    if (last_xon_usec != 0) {
+      uint64_t gap_usec = now_usec - last_xon_usec;
+      log_info(LD_EDGE, "XON_GAP_USEC %"PRIu64" conn=%"PRIu64" stream=%u",
+               gap_usec, TO_CONN(conn)->global_identifier,
+               (unsigned)conn->stream_id);
+    }
+    last_xon_usec = now_usec;
+  }
+
   /* Adjust the token bucket of this edge connection with the drain rate in
    * the XON. Rate is in bytes from kilobit (kpbs). */
+  /* BORING TEST */
+  const size_t bucket_before = token_bucket_rw_get_read(&conn->bucket);
+  /* BORING TEST */
   uint64_t rate = ((uint64_t) xon_cell_get_kbps_ewma(xon) * 1000);
   if (rate == 0 || INT32_MAX < rate) {
     /* No rate. */
     rate = INT32_MAX;
   }
   token_bucket_rw_adjust(&conn->bucket, (uint32_t) rate, (uint32_t) rate);
+  /* BORING TEST */
+  if (conn->hs_ident) {
+    log_info(LD_EDGE, "HSFC_DIAG_XON conn=%"PRIu64
+             " stream=%u xon_raw=%u rate=%"PRIu64" burst=%"PRIu64
+             " bucket_before=%"TOR_PRIuSZ" bucket_after=%"TOR_PRIuSZ
+             " xoff_received=%d total_xmit=%u num_xon=%u num_xoff=%u",
+             TO_CONN(conn)->global_identifier, (unsigned)conn->stream_id,
+             xon_cell_get_kbps_ewma(xon), rate, rate, bucket_before,
+             token_bucket_rw_get_read(&conn->bucket), conn->xoff_received,
+             conn->total_bytes_xmit, (unsigned)conn->num_xon_recv,
+             (unsigned)conn->num_xoff_recv);
+  }
+  /* BORING TEST */
 
   if (conn->xoff_received) {
     /* Clear the fact that we got an XOFF, so that this edge can
